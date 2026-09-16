@@ -1,0 +1,52 @@
+/* Polices auto-hébergées (voir design-system.md) — pas de <link> Google Fonts
+   en production : les fichiers sont servis depuis /public/fonts. */
+
+/* Registre "sauvage" : display carved/monumental plutôt que manuscrit
+   raffiné — remplace EB Garamond (voir design.md, section Overview,
+   pivot de phase). */
+@font-face {
+  font-family: "Alfa Slab One";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/alfa-slab-one.woff2") format("woff2");
+}
+
+/* Nouveau display principal (--font-display, voir tokens.css) : remplace
+   Alfa Slab One en tête de pile, gardé en repli. Sous-ensemble "latin"
+   uniquement (U+0000-00FF) — couvre les diacritiques du français
+   (é/è/à/ç/ù/ô/î), pas besoin des autres sous-ensembles Google Fonts
+   (cyrillic/vietnamese/latin-ext) pour ce produit. Auto-hébergé comme le
+   reste de ce fichier, jamais de <link>/@import vers fonts.googleapis.com
+   en production (voir commentaire d'en-tête). */
+@font-face {
+  font-family: "Black Ops One";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/black-ops-one.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Work Sans";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/work-sans-var.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-500.woff2") format("woff2");
+}

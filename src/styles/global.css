@@ -1,0 +1,161 @@
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./tokens.css";
+
+/* Trois registres distincts plutôt qu'un seul redimensionné : le display
+   marque les moments "titre de pièce" (h1, .font-display) — registre
+   "sauvage" (gravé, monumental), pas un manuscrit raffiné, voir design.md
+   §1. Le sans porte la structure courante (h2/h3, corps de texte), le mono
+   sert les données et étiquettes de type fiche d'inventaire. Règles posées
+   dans `@layer base` (après le preflight Tailwind, sous la couche utilities)
+   : une classe utilitaire appliquée sur un de ces éléments (ex. `text-base`
+   sur un h2) prime toujours sur la règle d'élément. */
+@layer base {
+  h1,
+  .font-display {
+    font-family: var(--font-display);
+    /* Alfa Slab One n'expose qu'un seul poids (400) — il est déjà massif par
+       construction. Forcer 600 déclencherait un faux-gras synthétique. */
+    font-weight: 400;
+    letter-spacing: 0;
+    /* 1.05 et non 1 : un h1 long ("Rejoindre le lobby") peut passer sur deux
+       lignes en mobile étroit — il faut une marge pour les descendantes
+       (j/g) plutôt qu'un empilement à zéro interligne. */
+    line-height: 1.05;
+  }
+
+  h1 {
+    font-size: var(--text-display);
+  }
+
+  h2 {
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: var(--text-xl);
+    letter-spacing: -0.005em;
+    line-height: 1.2;
+  }
+
+  h3 {
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: var(--text-lg);
+    line-height: 1.25;
+  }
+
+  body,
+  input,
+  button,
+  select,
+  textarea {
+    font-family: var(--font-body);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  /* Atmosphère plus chaude/présente que le rendu "raffiné" d'origine —
+     registre "sauvage" (voir design.md, section Overview). */
+  background-image:
+    radial-gradient(ellipse at 20% -10%, rgb(201 154 62 / 0.18), transparent 55%),
+    radial-gradient(ellipse at 100% 110%, rgb(181 80 45 / 0.22), transparent 50%);
+  background-attachment: fixed;
+}
+
+/* Grain plus marqué (peau/cuir brut plutôt que papier lisse) — atmosphère
+   plutôt que fond plat (voir design-system.md). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.09;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Bande fixe en haut du viewport : même motif chevron que les rainures
+   décoratives des cartes (linteau gravé, pas un filet de plaque de musée) —
+   signature présente sur les trois écrans sans introduire de coquille de
+   navigation qui n'existe pas dans ce produit. Voir design.md, section
+   Shapes, et docs/architecture/design-system.md, Historique de chantier
+   (phase 2). */
+body::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  z-index: 2;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-terracotta-400) 0 10px,
+    transparent 10px 20px
+  );
+  opacity: 0.55;
+}
+
+a {
+  color: var(--color-accent-strong);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-highlight);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Apparition puis effacement automatique du panneau "À vous de jouer"
+   (RollStatus.tsx) — durée synchronisée avec PROMPT_VISIBLE_MS, qui démonte
+   d'ailleurs le panneau à la fin : jamais affiché en permanence par-dessus
+   la scène. */
+@keyframes roll-status-fade {
+  0% {
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}

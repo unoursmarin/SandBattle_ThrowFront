@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; background: #bfe3f7; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      window.THREE = THREE;
+
+      const width = 1000, height = 1000;
+      const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+      renderer.setSize(width, height);
+      renderer.setClearColor(0xbfe3f7, 1);
+      renderer.shadowMap.enabled = false;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+
+      scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+      const dir = new THREE.DirectionalLight(0xffffff, 2.0);
+      dir.position.set(3, 5, 2);
+      scene.add(dir);
+
+      // Repères piste (mêmes constantes que sceneConstants.ts) : gouttière,
+      // ligne de lancer (z=+3), quilles (z=-3), et grille au sol.
+      const grid = new THREE.GridHelper(20, 20, 0x333333, 0x999999);
+      scene.add(grid);
+      const axes = new THREE.AxesHelper(2);
+      scene.add(axes);
+
+      // Marqueurs le long de l'axe de la piste (x=0) pour se repérer en Z.
+      function marker(z, color, label) {
+        const geo = new THREE.SphereGeometry(0.08, 12, 12);
+        const mat = new THREE.MeshBasicMaterial({ color });
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(0, 0.1, z);
+        scene.add(m);
+      }
+      marker(3, 0x00ff00, "foul-line");   // ligne de lancer
+      marker(-3, 0xff0000, "pins-end");   // bout de piste (entrée grotte visée ici)
+      marker(-1.6, 0xff8800, "pin-tip");  // rangée pointe des quilles
+
+      const CAVE_ROTATION_Y = Math.PI / 2;
+      const CAVE_POSITION = [0.18, -1.48, -3 - 4.22]; // LANE_HALF_LENGTH=3
+
+      let caveGroup = null;
+      const loader = new GLTFLoader();
+      loader.load("/models/cave_in_lancieux.glb", (gltf) => {
+        const group = new THREE.Group();
+        group.add(gltf.scene);
+        group.position.set(...CAVE_POSITION);
+        group.rotation.set(0, CAVE_ROTATION_Y, 0);
+        scene.add(group);
+        caveGroup = group;
+
+        const box = new THREE.Box3().setFromObject(group);
+        window.__caveWorldBox = { min: box.min.toArray(), max: box.max.toArray() };
+        window.__rendered = true;
+        render();
+      }, undefined, (err) => {
+        console.error(err);
+        window.__renderError = String(err);
+      });
+
+      let camera;
+      window.__setCamera = (px, py, pz, tx, ty, tz, fov) => {
+        camera = new THREE.PerspectiveCamera(fov ?? 50, 1, 0.05, 100);
+        camera.position.set(px, py, pz);
+        camera.lookAt(tx, ty, tz);
+        render();
+      };
+      function render() {
+        if (camera) renderer.render(scene, camera);
+      }
+
+      // ndcX,ndcY dans [-1,1] (comme un clic souris normalisé). Retourne le
+      // point d'impact monde + la normale de face (moyenne géométrique, pas
+      // lissée) sur le maillage de la grotte, pour poser le médaillon à
+      // plat contre la roche sans deviner les coordonnées à l'oeil.
+      window.__raycastCave = (ndcX, ndcY) => {
+        if (!camera || !caveGroup) return null;
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera({ x: ndcX, y: ndcY }, camera);
+        const hits = raycaster.intersectObject(caveGroup, true);
+        if (hits.length === 0) return null;
+        const hit = hits[0];
+        const normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+        const worldNormal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+        return {
+          point: hit.point.toArray(),
+          normal: worldNormal.toArray(),
+          distance: hit.distance,
+          objectName: hit.object.name,
+        };
+      };
+
+      // Marqueur visuel (petite sphère) à une position monde donnée, pour
+      // valider visuellement un point avant d'y poser le vrai médaillon.
+      window.__addMarker = (x, y, z, color) => {
+        const m = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 10), new THREE.MeshBasicMaterial({ color: color ?? 0xff00ff }));
+        m.position.set(x, y, z);
+        scene.add(m);
+        render();
+      };
+
+      // Caméra par défaut du jeu (BowlingScene.tsx) au démarrage.
+      window.__setCamera(0, 2.6, 5.4, 0, 0, 0, 45);
+    </script>
+  </body>
+</html>
