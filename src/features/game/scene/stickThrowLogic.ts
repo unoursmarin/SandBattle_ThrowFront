@@ -1,13 +1,5 @@
-/**
- * Logique pure du lancer aérien du bâton (voir ThrowingStick.tsx) — même
- * rôle que `ballRollLogic.ts` pour la boule : testée indépendamment
- * (tests/game/stickThrowLogic.test.ts), sans React ni Rapier.
- *
- * Le bâton est un corps `KinematicVelocityBased` : le moteur ne lui applique
- * jamais la gravité (voir ThrowingStick.tsx), donc la cloche du lancer est
- * intégrée ici à la main, à pas explicite (Euler semi-implicite : la
- * vitesse est mise à jour AVANT la position — stable pour ce cas).
- */
+
+// Here we calculate thrown  values we simulate an Euler approach
 import { GUTTER_BOTTOM_Y, STICK_RADIUS } from "./sceneConstants.ts";
 import type { LaneLayout } from "./laneSizes.ts";
 export type BallisticState = {
@@ -16,17 +8,7 @@ export type BallisticState = {
   landed: boolean;
 };
 
-/**
- * Vitesse verticale initiale pour traverser EXACTEMENT le point visé
- * (distance horizontale `distance`, hauteur `targetHeight`) : on impose
- * y(t) = targetHeight à t = distance / hSpeed, soit
- * vy = (target − y0 + ½·g·t²) / t. Chaque lancer légal vole ainsi jusqu'au
- * râtelier et le frappe à mi-quille — jamais de glissade sur la piste, et
- * la hauteur du lob s'adapte d'elle-même à la puissance (un lancer franc
- * part tendu, un lancer doux part en cloche). Bornée : un geste trop mou
- * pour porter jusqu'aux quilles retombe honnêtement avant (pas de
- * glissade de rattrapage), un geste nul ne décolle pas.
- */
+// Verticlal thrown speed ( vy = (target − y0 + ½·g·t²) 
 export function solveAerialVelocity(
   releaseY: number,
   distance: number,
@@ -42,19 +24,13 @@ export function solveAerialVelocity(
   return Math.min(maxVy, Math.max(minVy, vy));
 }
 
-/**
- * Hauteur où le bâton se plante (centre du fût) : SUR la piste (couché,
- * y = rayon), DANS la gouttière s'il a dérivé sur le côté — jamais à la
- * hauteur de lancer (le repos surélevé n'est pas un sol).
- */
+// Offset were you plant the stick
 export function stickGroundY(layout: LaneLayout, x: number): number {
   return Math.abs(x) <= layout.laneHalfWidth ? STICK_RADIUS : GUTTER_BOTTOM_Y + STICK_RADIUS;
 }
 
 /**
- * Replaque un point de drag dans la sphère de saisie (centre + rayon) :
- * l'utilisateur déplace le bâton librement sur x/y/z autour de sa pose de
- * repos, sans jamais pouvoir l'emmener vers les quilles.
+ * We allow the Stick to be thrown within a sphere (x,y,z) + r
  */
 export function clampToSphere(
   center: readonly [number, number, number],
