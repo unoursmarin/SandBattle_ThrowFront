@@ -120,4 +120,3 @@ export const STICK_RADIUS = 0.035; // m
  * center of the stick
  */
 export const STICK_HALF_HEIGHT = STICK_LENGTH / 2 - STICK_RADIUS;
-.
