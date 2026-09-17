@@ -67,7 +67,7 @@ export function ThrowingStick({
   const settledSinceRef = useRef<number | null>(null);
   // Detects end of the throw
   const endDetectedAtRef = useRef<number | null>(null);
-  const rollingSinceRef = useRef(0);.
+  const rollingSinceRef = useRef(0);
   // State of the throw (parabolic throw)
   const flightRef = useRef<{ vy: number; landed: boolean }>({ vy: 0, landed: true });
   // phaseRef` synchrone, same ref as in Ball.tsx
