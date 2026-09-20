@@ -1,3 +1,4 @@
+import type { ProjectileType } from "./projectileTypes.ts";
 import { BALL_RADIUS, PIN_ROW_SIZES, STICK_REST_HEIGHT } from "./sceneConstants.ts";
 
 export const LANE_SIZES = ["small", "medium", "large"] as const;
@@ -5,6 +6,10 @@ export type LaneSize = (typeof LANE_SIZES)[number];
 
 export function isLaneSize(value: unknown): value is LaneSize {
   return value === "small" || value === "medium" || value === "large";
+}
+
+export function laneSizeFor(projectile: ProjectileType, chosen: LaneSize): LaneSize {
+  return projectile === "stick" ? "small" : chosen;
 }
 
 export type LaneLayout = {

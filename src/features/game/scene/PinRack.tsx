@@ -1,26 +1,36 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 
-import { Pin, type PinHandle } from "./Pin";
+import { Pin } from "./Pin";
+import type { PinBodyPose, PinHandle } from "./pinController";
+import { applyReplayResult, countStanding, resetRackToTarget, retireFallenPins, snapshotPins } from "./rackLogic";
 import { buildPinPositions, PIN_POSITIONS } from "./pinPositions";
 import type { LaneLayout } from "./laneSizes";
-import { hasBeenStableLongEnough, planRackReset, updateStableSince } from "./pinSettleLogic";
-
-// A pin can wimble after being touched
-const PIN_SETTLE_DURATION_MS = 400;
+import type { PinPose } from "@/lib/api/schemas";
+import { PIN_OFF_LANE_MARGIN } from "./sceneConstants";
 
 export interface PinRackHandle {
   // The nyumber of pin standing 
   countStanding(): number;
-  //  No pin are standing anymore 
-  arePinsSettled(): boolean;
   retireFallenPins(): void;
+  /** The pins right now, by index: what a replay of the throw about to happen starts from. */
+  snapshotPins(): PinPose[];
+  /** Hides the whole rack while a throw is replayed; `showAfterReplay` brings it back as it was (another player's throw, or a replay cut short). */
+  hideForReplay(): void;
+  showAfterReplay(): void;
+  /**
+   * What a replayed throw left of the rack (see settleRack), by index: the pins still in play are put
+   * on their own spots, upright, and the ones that fell leave the game, like after any roll.
+   */
+  applyReplayResult(poses: readonly PinBodyPose[]): void;
 }
 
 /**
- * Rack of 15 pins at each changes we compare it with the actual value of pins standing. 
+ * Rack of 15 pins at each changes we compare it with the actual value of pins standing.
+ * The pins here are INERT: their poses are set by code (a fresh frame, or where a replayed throw
+ * left them), never by physics. The physics of a throw is played in a private world (see replayWorld.ts),
+ * so nothing in this scene can knock a pin over by itself.
  */
-export const PinRack = forwardRef<PinRackHandle, { pinsStanding: number; rollSequence: number; layout?: LaneLayout }>(function PinRack(
+export const PinRack = memo(forwardRef<PinRackHandle, { pinsStanding: number; rollSequence: number; layout?: LaneLayout }>(function PinRack(
   { pinsStanding, rollSequence, layout },
   ref,
 ) {
@@ -31,61 +41,27 @@ export const PinRack = forwardRef<PinRackHandle, { pinsStanding: number; rollSeq
     () =>
       layout
         ? {
-            maxAbsX: layout.gutterOuterHalfWidth + 0.3,
-            maxAbsZ: layout.laneHalfLength + 1,
+            maxAbsX: layout.gutterOuterHalfWidth + PIN_OFF_LANE_MARGIN,
+            maxAbsZ: layout.laneHalfLength + PIN_OFF_LANE_MARGIN,
             minY: -1,
           }
         : undefined,
     [layout],
   );
   const pinRefs = useRef<(PinHandle | null)[]>([]);
-  //Since when all the pins are stable 
-  const allPinsStableSinceRef = useRef<number | null>(null);
 
-  // Fallen or out of place = Out. 
-  function countStanding(): number {
-    return pinRefs.current.reduce((count, pin) => count + (pin && !pin.isOutOfPlay() ? 1 : 0), 0);
-  }
-
-
-  function isPinSettled(pin: PinHandle): boolean {
-    return pin.isFallen() || !pin.isMoving() || pin.isOffLane();
-  }
-
-  useFrame(() => {
-    const allSettled = pinRefs.current.every((pin) => !pin || isPinSettled(pin));
-    allPinsStableSinceRef.current = updateStableSince(allPinsStableSinceRef.current, allSettled, performance.now());
-  });
-
-  function arePinsSettled(): boolean {
-    return hasBeenStableLongEnough(allPinsStableSinceRef.current, performance.now(), PIN_SETTLE_DURATION_MS);
-  }
-
-  function retireFallenPins(): void {
-    pinRefs.current.forEach((pin) => {
-      if (pin?.isOutOfPlay()) pin.retire();
-    });
-  }
-
-  useImperativeHandle(ref, () => ({ countStanding, arePinsSettled, retireFallenPins }));
-
-  // Brings back to position
-  function resetRackToTarget(target: number) {
-    const plan = planRackReset(countStanding(), target, positions.length);
-    if (plan.type === "noop") return;
-    if (plan.type === "resetAll") {
-      pinRefs.current.forEach((pin) => pin?.reset());
-      return;
-    }
-    pinRefs.current.forEach((pin, index) => {
-      if (index < plan.standCount) pin?.reset();
-      else pin?.forceDown();
-    });
-  }
+  useImperativeHandle(ref, () => ({
+    countStanding: () => countStanding(pinRefs.current),
+    retireFallenPins: () => retireFallenPins(pinRefs.current),
+    snapshotPins: () => snapshotPins(pinRefs.current),
+    hideForReplay: () => pinRefs.current.forEach((pin) => pin?.hideForReplay()),
+    showAfterReplay: () => pinRefs.current.forEach((pin) => pin?.showAfterReplay()),
+    applyReplayResult: (poses) => applyReplayResult(pinRefs.current, poses),
+  }));
 
   useEffect(() => {
-    resetRackToTarget(pinsStanding);
-    // `resetRackToTarget` reads reference at the given time
+    resetRackToTarget(pinRefs.current, pinsStanding, positions.length);
+    // The pins are read from the refs at the given time.
   }, [pinsStanding, rollSequence]);
 
   return (
@@ -102,4 +78,4 @@ export const PinRack = forwardRef<PinRackHandle, { pinsStanding: number; rollSeq
       ))}
     </group>
   );
-});
+}));

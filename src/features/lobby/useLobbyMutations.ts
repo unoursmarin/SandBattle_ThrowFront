@@ -1,8 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-
 import { createLobby, joinLobby, leaveLobby, setReady, startGame } from "@/lib/api/endpoints";
+import type { LaneSizeSetting, ProjectileSetting } from "@/lib/api/schemas";
 import type { LobbySnapshot } from "@/lib/api/schemas";
-
 import { lobbyQueryKey } from "./useLobbyQuery";
 
 export function useCreateLobbyMutation() {
@@ -36,6 +35,7 @@ export function useLeaveLobbyMutation(lobbyId: string) {
 
 export function useStartGameMutation(lobbyId: string) {
   return useMutation({
-    mutationFn: (sessionToken: string) => startGame(lobbyId, sessionToken),
+    mutationFn: (args: { sessionToken: string; projectile: ProjectileSetting; laneSize: LaneSizeSetting }) =>
+      startGame(lobbyId, args.sessionToken, { projectile: args.projectile, laneSize: args.laneSize }),
   });
 }

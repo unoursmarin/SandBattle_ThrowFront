@@ -1,15 +1,15 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Sky, useGLTF } from "@react-three/drei";
 
-import { CAVE_ROTATION_Y } from "./sceneConstants";
+import { CAVE_ROTATION_Y, SAND_SURFACE_Y } from "./sceneConstants";
 
 const BEACH_MODEL_URL = "/models/beach.glb";
 const CAVE_MODEL_URL = "/models/cave_in_lancieux.glb";
 useGLTF.preload(BEACH_MODEL_URL);
 useGLTF.preload(CAVE_MODEL_URL);
 
-// Above the beach 
-const BEACH_SURFACE_Y = -0.093;
+// Foliage stands on the (physical) sand surface
+const BEACH_SURFACE_Y = SAND_SURFACE_Y;
 
 type FoliageProp = {
   url: string;
@@ -18,9 +18,9 @@ type FoliageProp = {
   scale: number;
 };
 
-/**
-  Gets objects and place them as props for the foliage instances.
- */
+
+//  Gets objects and place them as props for the foliage instances.
+ 
 const FOLIAGE_PROPS: FoliageProp[] = [
 
   { url: "/models/palm_trees.glb", position: [-8.5, BEACH_SURFACE_Y, 0], rotationY: Math.PI / 2, scale: 1 },
@@ -45,10 +45,10 @@ function FoliageInstance({ url, position, rotationY, scale }: FoliageProp) {
   return <primitive object={instance} position={position} rotation={[0, rotationY, 0]} scale={scale} />;
 }
 
-/**
- * Layout objects for the scene (beach, cave, foliage).
- */
-export function Decor({ cavePosition }: { cavePosition: [number, number, number] }) {
+
+// Layout objects for the scene (beach, cave, foliage).
+
+export const Decor = memo(function Decor({ cavePosition }: { cavePosition: [number, number, number] }) {
   const { scene: beachScene } = useGLTF(BEACH_MODEL_URL);
   const { scene: caveScene } = useGLTF(CAVE_MODEL_URL);
 
@@ -64,4 +64,4 @@ export function Decor({ cavePosition }: { cavePosition: [number, number, number]
       ))}
     </group>
   );
-}
+});

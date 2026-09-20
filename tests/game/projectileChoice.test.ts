@@ -24,8 +24,8 @@ describe("projectileChoice (sessionStorage)", () => {
     store = installMemorySessionStorage();
   });
 
-  it("retourne ball par défaut sans choix préalable", () => {
-    expect(loadProjectileChoice()).toBe("ball");
+  it("retourne stick par défaut sans choix préalable", () => {
+    expect(loadProjectileChoice()).toBe("stick");
   });
 
   it("persiste le bâton puis la boule (roundtrip)", () => {
@@ -35,8 +35,8 @@ describe("projectileChoice (sessionStorage)", () => {
     expect(loadProjectileChoice()).toBe("ball");
   });
 
-  it("retombe sur ball face à une valeur corrompue", () => {
+  it("retombe sur stick face à une valeur corrompue", () => {
     store.set("telemis.projectileChoice", JSON.stringify("disc"));
-    expect(loadProjectileChoice()).toBe("ball");
+    expect(loadProjectileChoice()).toBe("stick");
   });
 });

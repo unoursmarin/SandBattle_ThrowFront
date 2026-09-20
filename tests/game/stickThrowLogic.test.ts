@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { LANE_LAYOUTS } from "../../src/features/game/scene/laneSizes";
-import { STICK_RADIUS } from "../../src/features/game/scene/sceneConstants";
 import {
   clampToSphere,
-  computeImpulseSpin,
-  integrateBallisticStep,
+  dragTargetCenter,
+  isStickSettled,
+  projectOntoAxis,
   solveAerialVelocity,
-  stickGroundY,
 } from "../../src/features/game/scene/stickThrowLogic";
 
 describe("solveAerialVelocity", () => {
@@ -36,19 +34,50 @@ describe("solveAerialVelocity", () => {
   it("plafonne les gestes trop mous pour porter (retombée honnête avant les quilles)", () => {
     const vy = solveAerialVelocity(1.0, 9.4, 3, 0.15, 9.81, -2, 7.5);
     expect(vy).toBe(7.5);
-    // Portée réelle avec le plafond : en deçà du râtelier (9,4 m).
+    // The actual range with the ceiling: below the rack (9.4 m).
     const flightTime = (vy + Math.sqrt(vy * vy + 2 * 9.81 * (1.0 - 0.035))) / 9.81;
     expect(flightTime * 3).toBeLessThan(9.4);
   });
 });
 
-describe("stickGroundY", () => {
-  it("sur la piste : couché au sol (rayon), pas à hauteur de lancer", () => {
-    for (const size of ["small", "medium", "large"] as const) {
-      const layout = LANE_LAYOUTS[size];
-      expect(stickGroundY(layout, 0)).toBe(STICK_RADIUS);
-      expect(stickGroundY(layout, layout.laneHalfWidth + 0.1)).toBeLessThan(0.1);
+describe("solveAerialVelocity avec traînée", () => {
+  // Integrates the projectile motion with drag to estimate the height at the rack.
+  function heightAtRack(vy0: number, hSpeed: number, distance: number, c: number, releaseY = 1.0): number {
+    let s = 0;
+    let y = releaseY;
+    let vh = hSpeed;
+    let vy = vy0;
+    const dt = 1 / 2000;
+    for (let i = 0; i < 40000 && s < distance; i += 1) {
+      const speed = Math.hypot(vh, vy);
+      vh -= c * speed * vh * dt;
+      vy -= (9.81 + c * speed * vy) * dt;
+      s += vh * dt;
+      y += vy * dt;
     }
+    return y;
+  }
+
+  it("dragPerMass = 0 : identique à la parabole analytique", () => {
+    expect(solveAerialVelocity(1.0, 4.2, 7, 0.15, 9.81, -2, 7.5, 0)).toBeCloseTo(
+      solveAerialVelocity(1.0, 4.2, 7, 0.15, 9.81, -2, 7.5),
+      9,
+    );
+  });
+
+  it("compense la traînée : plus de portance qu'en vol libre, et passe bien à hauteur de frappe", () => {
+    const c = 0.05;
+    const free = solveAerialVelocity(1.0, 4.2, 7, 0.15, 9.81, -2, 7.5);
+    const dragged = solveAerialVelocity(1.0, 4.2, 7, 0.15, 9.81, -2, 7.5, c);
+    expect(dragged).toBeGreaterThan(free);
+    // The height at the rack is computed using the independent integration to verify the solver's accuracy.
+    expect(Math.abs(heightAtRack(dragged, 7, 4.2, c) - 0.15)).toBeLessThan(0.03);
+  });
+
+  it("reste borné par [minVy, maxVy], même avec une traînée énorme", () => {
+    const vy = solveAerialVelocity(1.0, 9.4, 3, 0.15, 9.81, -2, 7.5, 5);
+    expect(vy).toBeLessThanOrEqual(7.5);
+    expect(vy).toBeGreaterThanOrEqual(-2);
   });
 });
 
@@ -65,66 +94,77 @@ describe("clampToSphere", () => {
   });
 });
 
-describe("computeImpulseSpin", () => {
-  it("saisie au centre → vol stable, aucune vrille", () => {
-    const spin = computeImpulseSpin([0, 0, 0], [0, 2, -7], 0.6, 12);
-    expect(spin.axis).toBeNull();
-    expect(spin.angularSpeed).toBe(0);
+describe("dragTargetCenter", () => {
+  const rest: [number, number, number] = [0, 0.6, 2.6];
+
+  it("le point saisi reste sous le pointeur : centre = pointeur − bras de levier", () => {
+    // Saisi à 0,2 m du centre : le centre ne saute pas sous le curseur.
+    const center = dragTargetCenter([0.1, 0.7, 2.5], [0.2, 0, 0], rest, 1);
+    expect(center[0]).toBeCloseTo(-0.1, 5);
+    expect(center[1]).toBeCloseTo(0.7, 5);
+    expect(center[2]).toBeCloseTo(2.5, 5);
   });
 
-  it("saisie au bout + lancer franc → vrille avant plafonnée", () => {
-    const spin = computeImpulseSpin([0.3, 0, 0], [0, 0, -7], 0.6, 12);
-    expect(spin.axis).not.toBeNull();
-    expect(spin.angularSpeed).toBe(12);
+  it("saisie au centre : le centre suit exactement le pointeur", () => {
+    expect(dragTargetCenter([0.1, 0.7, 2.5], [0, 0, 0], rest, 1)).toEqual([0.1, 0.7, 2.5]);
   });
 
-  it("formule exacte sous le plafond : ω = 12·|r×v|/L²", () => {
-    const spin = computeImpulseSpin([0.05, 0, 0], [0, 0, -4], 0.6, 100);
-    expect(spin.angularSpeed).toBeCloseTo((12 * 0.05 * 4) / 0.36, 5);
-  });
-
-  it("zéro sans vitesse ni longueur (jamais de division par zéro)", () => {
-    expect(computeImpulseSpin([0.3, 0, 0], [0, 0, 0], 0.6, 12).angularSpeed).toBe(0);
-    expect(computeImpulseSpin([0.3, 0, 0], [0, 0, -7], 0, 12).angularSpeed).toBe(0);
+  it("borne le CENTRE (pas le pointeur) dans la sphère de saisie", () => {
+    const center = dragTargetCenter([0, 2.6, 2.6], [0.2, 0, 0], rest, 0.4);
+    const dist = Math.hypot(center[0] - rest[0], center[1] - rest[1], center[2] - rest[2]);
+    expect(dist).toBeCloseTo(0.4, 5);
   });
 });
 
-describe("integrateBallisticStep", () => {
-  it("un bâton déjà posé reste posé", () => {
-    expect(integrateBallisticStep({ y: 0.04, vy: 0, landed: true }, 0.04, 9.81, 1 / 60)).toEqual({
-      y: 0.04,
-      vy: 0,
-      landed: true,
-    });
+describe("isStickSettled", () => {
+  const T = 0.05;
+  const AXIS: [number, number, number] = [1, 0, 0];
+  const settled = (v: [number, number, number], w: [number, number, number]) =>
+    isStickSettled(v, w, AXIS, { radius: 0.035, halfLength: 0.3 }, T);
+
+  it("immobile : au repos", () => {
+    expect(settled([0, 0, 0], [0, 0, 0])).toBe(true);
   });
 
-  it("monte puis redescend et se pose sans rebond", () => {
-    const floorY = 0.04;
-    let state = { y: floorY, vy: 2.45, landed: false };
-    let apex = floorY;
-    let steps = 0;
-    while (!state.landed && steps < 600) {
-      state = integrateBallisticStep(state, floorY, 9.81, 1 / 60);
-      apex = Math.max(apex, state.y);
-      steps += 1;
-    }
-    expect(state.landed).toBe(true);
-    expect(state.y).toBe(floorY);
-    expect(state.vy).toBe(0);
-
-    expect(apex).toBeGreaterThan(floorY + 0.2);
-    expect(apex).toBeLessThan(floorY + 0.45);
+  it("encore en vol ou en glissade : pas au repos (vitesse 3D, y compris verticale)", () => {
+    expect(settled([0, 0, -1], [0, 0, 0])).toBe(false);
+    expect(settled([0, 2, 0], [0, 0, 0])).toBe(false);
   });
 
-  it("atterrit à hauteur de gouttière au-dessus d'un chenal", () => {
-    const gutterFloorY = -0.025;
-    let state = { y: 0.0, vy: -1, landed: false };
-    let steps = 0;
-    while (!state.landed && steps < 60) {
-      state = integrateBallisticStep(state, gutterFloorY, 9.81, 1 / 60);
-      steps += 1;
-    }
-    expect(state.landed).toBe(true);
-    expect(state.y).toBe(gutterFloorY);
+  it("roule encore autour de son axe : la vitesse de peau |ω|·r compte (20 rad/s × 3,5 cm = 0,7 m/s)", () => {
+    expect(settled([0, 0, 0], [-20, 0, 0])).toBe(false);
+  });
+
+  it("rampement résiduel d'un roulement quasi fini : au repos", () => {
+    expect(settled([0, 0, -0.04], [-1, 0, 0])).toBe(true);
+  });
+
+  it("pivote encore (lacet/tangage) : la POINTE bouge à ω·L/2, pas à ω·r", () => {
+    // 0,5 rad/s de lacet : la peau ne bouge qu'à 1,7 cm/s mais la pointe à 15 cm/s.
+    expect(settled([0, 0, 0], [0, 0.5, 0])).toBe(false);
+    expect(settled([0, 0, 0], [0, 0, 0.5])).toBe(false);
+  });
+
+  it("pivote presque plus : la pointe rampe sous le seuil, au repos", () => {
+    expect(settled([0, 0, 0], [0, 0.1, 0])).toBe(true);
+  });
+});
+
+describe("projectOntoAxis", () => {
+  it("ramène un point de saisie sur la SURFACE du bâton à son axe (le doigt enserre le bâton)", () => {
+    // Saisi à 0,2 m du centre, mais 3 cm au-dessus/à côté de l'axe (surface du capsule).
+    const [x, y, z] = projectOntoAxis([0.2, 0.02, 0.03], [1, 0, 0]);
+    expect(x).toBeCloseTo(0.2, 9);
+    expect(y).toBeCloseTo(0, 9);
+    expect(z).toBeCloseTo(0, 9);
+  });
+
+  it("indépendant de la norme de l'axe, et de son sens", () => {
+    expect(projectOntoAxis([0.2, 0.02, 0.03], [5, 0, 0])[0]).toBeCloseTo(0.2, 9);
+    expect(projectOntoAxis([0.2, 0.02, 0.03], [-1, 0, 0])[0]).toBeCloseTo(0.2, 9);
+  });
+
+  it("axe nul : pas de projection possible, on renvoie l'origine", () => {
+    expect(projectOntoAxis([0.2, 0.02, 0.03], [0, 0, 0])).toEqual([0, 0, 0]);
   });
 });

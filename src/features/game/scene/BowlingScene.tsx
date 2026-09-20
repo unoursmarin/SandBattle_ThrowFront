@@ -12,8 +12,12 @@ import type { ProjectileType } from "./projectileTypes";
 import { Decor } from "./Decor";
 import { ConfettiEmitters, type CelebrationEvent } from "./Confetti";
 import { Lane } from "./Lane";
+import { Sand } from "./Sand";
 import { PinRack, type PinRackHandle } from "./PinRack";
 import { getLaneLayout, type LaneSize } from "./laneSizes";
+import { ThrowReplayDirector, type ReplayResult } from "../replay/ThrowReplayDirector";
+import type { CapturedThrow, ReplayInput } from "../replay/throwPayload";
+import type { ThrowCapture } from "../replay/replayTypes";
 
 const CONFETTI_SIDE_RADIUS = 3.6;
 const CONFETTI_SIDE_OFFSET = CONFETTI_SIDE_RADIUS * Math.SQRT1_2;
@@ -52,6 +56,10 @@ export function BowlingScene({
   celebration,
   projectileType,
   laneSize,
+  onThrowLaunched,
+  remoteReplay = null,
+  onRemoteReplayFinished,
+  onReplayActiveChange,
 }: {
   pinsStanding: number;
   rollSequence: number;
@@ -60,6 +68,13 @@ export function BowlingScene({
   celebration?: CelebrationEvent | null;
   projectileType: ProjectileType;
   laneSize: LaneSize;
+  /** The local player just launched a throw: send it to the server so the others can replay it. */
+  onThrowLaunched?: (thrown: CapturedThrow) => void;
+  /** Another player's throw to replay (a new throw id starts a new replay). */
+  remoteReplay?: ReplayInput | null;
+  onRemoteReplayFinished?: (throwId: string) => void;
+  /** True while a replay (the local player's own, or another's) is on screen. */
+  onReplayActiveChange?: (active: boolean) => void;
 }) {
   const reduceMotion = useReducedMotion();
   const [webglSupported, setWebglSupported] = useState(supportsWebGL);
@@ -68,13 +83,12 @@ export function BowlingScene({
   const [retryToken, setRetryToken] = useState(0);
   const [isDraggingBall, setIsDraggingBall] = useState(false);
   const pinRackRef = useRef<PinRackHandle>(null);
-  const pinsStandingRef = useRef(pinsStanding);
+  // The local player's own throw plays in a private world, like everyone else's: same state, same code, same result.
+  const [ownReplay, setOwnReplay] = useState<ReplayInput | null>(null);
+  const [replayActive, setReplayActive] = useState(false);
+  const [finishToken, setFinishToken] = useState(0);
   const layout = getLaneLayout(laneSize);
   const emitters = useMemo(() => confettiEmitters(layout.cavePosition), [layout.cavePosition]);
-  useEffect(() => {
-    pinsStandingRef.current = pinsStanding; 
-  }, [pinsStanding]);
-
   useEffect(() => {
     if (!canvasEl) return;
 
@@ -104,15 +118,46 @@ export function BowlingScene({
     setRetryToken((token) => token + 1);
   }
 
-  function handleBallSettled() {
-    const standingBeforeThrow = pinsStandingRef.current;
-    const standingAfterThrow = pinRackRef.current?.countStanding() ?? standingBeforeThrow;
-    pinRackRef.current?.retireFallenPins();
-    onRollComplete(Math.max(0, standingBeforeThrow - standingAfterThrow));
+  /**
+   * The projectile just left the hand: the throw is played in a private world, from the launch
+   * variables and the rack as it is now (see ThrowReplayDirector) — the same for every client, this
+   * one included. The score is what that replay says.
+   */
+  function handleThrowLaunched(capture: ThrowCapture) {
+    const rack = pinRackRef.current?.snapshotPins() ?? [];
+    if (rack.length === 0) {
+      // No rack to start from: nothing can be played. Count an empty roll rather than freezing the game.
+      console.error("Lancer impossible à rejouer : râtelier indisponible.");
+      setFinishToken((token) => token + 1);
+      onRollComplete(0);
+      return;
+    }
+    onThrowLaunched?.({ capture, rack, laneSize });
+    setOwnReplay({
+      throwId: crypto.randomUUID(),
+      playerId: "",
+      projectile: capture.projectile,
+      laneSize,
+      launch: capture.launch,
+      rack,
+      own: true,
+    });
   }
 
-  function arePinsSettled(): boolean {
-    return pinRackRef.current?.arePinsSettled() ?? false;
+  function handleReplayActiveChange(active: boolean) {
+    setReplayActive(active);
+    onReplayActiveChange?.(active);
+  }
+
+  function handleReplayFinished(result: ReplayResult) {
+    if (result.own) {
+      setOwnReplay(null);
+      setFinishToken((token) => token + 1);
+      if (result.felled === null) console.error("Le rejeu de votre lancer a échoué : lancer compté à 0 quille.");
+      onRollComplete(result.felled ?? 0);
+    } else {
+      onRemoteReplayFinished?.(result.throwId);
+    }
   }
 
   if (!webglSupported) {
@@ -150,25 +195,37 @@ export function BowlingScene({
           <Decor cavePosition={layout.cavePosition} />
 
           <Physics gravity={[0, -9.81, 0]} numSolverIterations={24} numInternalPgsIterations={8}>
+            <Sand />
             <Lane layout={layout} />
             <PinRack ref={pinRackRef} pinsStanding={pinsStanding} rollSequence={rollSequence} layout={layout} />
             {projectileType === "stick" ? (
               <ThrowingStick
                 canThrow={canThrow}
                 onDragChange={setIsDraggingBall}
-                onSettled={handleBallSettled}
-                arePinsSettled={arePinsSettled}
                 layout={layout}
+                onThrowLaunched={handleThrowLaunched}
+                hidden={replayActive}
+                finishToken={finishToken}
               />
             ) : (
               <Ball
                 canThrow={canThrow}
                 onDragChange={setIsDraggingBall}
-                onSettled={handleBallSettled}
-                arePinsSettled={arePinsSettled}
                 layout={layout}
+                onThrowLaunched={handleThrowLaunched}
+                hidden={replayActive}
+                finishToken={finishToken}
               />
             )}
+            <ThrowReplayDirector
+              input={ownReplay ?? remoteReplay}
+              projectileType={projectileType}
+              laneSize={laneSize}
+              layout={layout}
+              pinRackRef={pinRackRef}
+              onActiveChange={handleReplayActiveChange}
+              onFinished={handleReplayFinished}
+            />
           </Physics>
         </Suspense>
         

@@ -1,90 +1,94 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CoefficientCombineRule, RigidBodyType } from "@dimforge/rapier3d-compat";
+import { RigidBodyType } from "@dimforge/rapier3d-compat";
 import { useGLTF } from "@react-three/drei";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { CapsuleCollider, RigidBody, type RapierRigidBody } from "@react-three/rapier";
 import { Plane, Vector3 } from "three";
 
-import {
-  STICK_HALF_HEIGHT,
-  STICK_LENGTH,
-  STICK_RADIUS,
-} from "./sceneConstants";
+import { STICK_HALF_HEIGHT, STICK_LENGTH, STICK_RADIUS } from "./sceneConstants";
 import type { LaneLayout } from "./laneSizes";
-import { shouldEndRoll } from "./ballRollLogic";
-import {
-  clampToSphere,
-  computeImpulseSpin,
-  integrateBallisticStep,
-  solveAerialVelocity,
-  stickGroundY,
-} from "./stickThrowLogic";
+import { meanDragPerMass, STICK_DRAG_PARAMS } from "./stickAerodynamics";
+import { STICK_MASS_PROPERTIES } from "./stickMassProperties";
+import { MAX_THROW_SPEED } from "./stickThrowSim";
+import type { ThrowCapture } from "../replay/replayTypes";
+import { dragTargetCenter, solveAerialVelocity } from "./stickThrowLogic";
 
-const STICK_MODEL_URL = "/models/throwing_stick.glb";
+export const STICK_MODEL_URL = "/models/throwing_stick.glb";
 useGLTF.preload(STICK_MODEL_URL);
 
 const MAX_DRAG_RADIUS = 0.6;
-const MAX_THROW_SPEED = 12; // m/s
 const LATERAL_GESTURE_DAMPING = 0.4;
 const MIN_THROW_SPEED = 0.6;
 const VELOCITY_HISTORY_MS = 120;
-const SETTLE_LINEAR_THRESHOLD = 0.05;
 const IDENTITY_ROTATION = { x: 0, y: 0, z: 0, w: 1 };
-const SETTLE_DURATION_MS = 300;
-const ROLL_END_GRACE_MS = 3000;
-const MAX_ROLL_DURATION_MS = 14000;
-const ABSOLUTE_MAX_ROLL_DURATION_MS = 22000;
-const STICK_GRAVITY = 9.81; // m/s²  
-const STICK_STRIKE_HEIGHT = 0.15; // m  
-const MAX_LOB = 7.5; // m/s — 
+const STICK_GRAVITY = 9.81; // m/s² — same as the replay world's gravity, used to aim the lob
+const STICK_STRIKE_HEIGHT = 0.15; // m
+const MAX_LOB = 7.5; // m/s
 const MIN_LOB_VY = -2; // m/s — a throw can go down
-const MAX_SPIN = 12; // rad/s
+/** Drag anticipated when aiming the lob (mean cross-section, see meanDragPerMass). */
+const AIM_DRAG_PER_MASS = meanDragPerMass(STICK_DRAG_PARAMS, STICK_MASS_PROPERTIES.mass);
 
-type Phase = "resting" | "held" | "rolling";
+// "replaying": the throw is played in a private world (see ThrowReplayDirector): the stick waits, hidden, at rest.
+type Phase = "resting" | "held" | "replaying";
 
 type PointerSample = { x: number; z: number; t: number };
 
-// Throwing stick : caught in kinematic position thrown with velocitybased 
+/**
+ * The throwing stick: grabbed, dragged (a kinematic body: the grabbed point follows the pointer),
+ * released. What happens AFTER the release is not simulated here: the gesture is turned into the
+ * launch variables (position, velocity, where it was held) and handed to the scene, which plays the
+ * throw in a private world, the same one on every client (see replayWorld.ts).
+ */
 export function ThrowingStick({
   canThrow,
   onDragChange,
-  onSettled,
-  arePinsSettled,
   layout,
+  onThrowLaunched,
+  hidden = false,
+  finishToken,
 }: {
   canThrow: boolean;
   onDragChange: (isDragging: boolean) => void;
-  onSettled: () => void;
-  arePinsSettled: () => boolean;
   /** Dimension of the current lane cf laneSizes.ts). */
   layout: LaneLayout;
+  /** The stick was released: how it was launched. The scene plays the throw. */
+  onThrowLaunched: (capture: ThrowCapture) => void;
+  /** Another player's throw is being replayed: hide this projectile meanwhile. */
+  hidden?: boolean;
+  /** Changes when the replay of this stick's throw is over: the stick comes back to hand. */
+  finishToken?: number;
 }) {
   const { scene } = useGLTF(STICK_MODEL_URL);
   const clonedScene = useMemo(() => scene.clone(), [scene]);
   const rigidBodyRef = useRef<RapierRigidBody>(null);
   const [phase, setPhaseState] = useState<Phase>("resting");
   const historyRef = useRef<PointerSample[]>([]);
-  const settledSinceRef = useRef<number | null>(null);
-  // Detects end of the throw
-  const endDetectedAtRef = useRef<number | null>(null);
-  const rollingSinceRef = useRef(0);
-  // State of the throw (parabolic throw)
-  const flightRef = useRef<{ vy: number; landed: boolean }>({ vy: 0, landed: true });
-  // phaseRef` synchrone, same ref as in Ball.tsx
+  // The handlers read phaseRef.current where they must be current at once, same idea as in Ball.tsx
   const phaseRef = useRef<Phase>("resting");
   function setPhase(next: Phase) {
     phaseRef.current = next;
     setPhaseState(next);
   }
 
-  
   // rest position of the stick
   const rest = layout.stickRest;
   const camera = useThree((state) => state.camera);
   //Dragging plane for the stick
   const dragPlaneRef = useRef<Plane | null>(null);
-  // Offset from the center of mass to the grab point (lever arm for the impulse).
+  // Offset from the body origin (geometric center) to the grab point: keeps the grabbed point under the pointer while dragging, and is where the stick is held along its axis at the release.
   const grabOffsetRef = useRef<[number, number, number]>([0, 0, 0]);
+
+  // Unmounted mid-drag: give the camera controls and the cursor back.
+  useEffect(
+    () => () => {
+      if (phaseRef.current === "held") {
+        onDragChange(false);
+        document.body.style.cursor = "auto";
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   useEffect(() => {
     if (!canThrow && document.body.style.cursor === "grab") {
@@ -92,13 +96,14 @@ export function ThrowingStick({
     }
   }, [canThrow]);
 
-  // Projects the pointer onto the drag plane and then clamps it within the grab sphere.
+  // Projects the pointer onto the drag plane and returns where the stick CENTER must be so
+  // that the grabbed point stays under the pointer (clamped within the grab sphere).
   function dragPoint(event: ThreeEvent<PointerEvent>): Vector3 | null {
     const plane = dragPlaneRef.current;
     if (!plane) return null;
     const hit = new Vector3();
     if (!event.ray.intersectPlane(plane, hit)) return null;
-    const [x, y, z] = clampToSphere(rest, [hit.x, hit.y, hit.z], MAX_DRAG_RADIUS);
+    const [x, y, z] = dragTargetCenter([hit.x, hit.y, hit.z], grabOffsetRef.current, rest, MAX_DRAG_RADIUS);
     return new Vector3(x, y, z);
   }
 
@@ -123,7 +128,7 @@ export function ThrowingStick({
     const normal = new Vector3();
     camera.getWorldDirection(normal).negate();
     dragPlaneRef.current = new Plane().setFromNormalAndCoplanarPoint(normal, event.point);
-    // Lever arm for the impulse: grab point minus center of mass.
+    // Grab point minus body origin (see grabOffsetRef).
     const com = rigidBodyRef.current?.translation();
     grabOffsetRef.current = com
       ? [event.point.x - com.x, event.point.y - com.y, event.point.z - com.z]
@@ -153,10 +158,35 @@ export function ThrowingStick({
     }
   }
 
+  // The stick goes back to hand: at rest, not moving, out of the way of the replay.
+  function parkAtRest() {
+    const body = rigidBodyRef.current;
+    if (!body) return;
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.setTranslation({ x: rest[0], y: rest[1], z: rest[2] }, true);
+    body.setRotation(IDENTITY_ROTATION, true);
+    body.setBodyType(RigidBodyType.Fixed, true);
+  }
+
+  // The gesture was taken away (touch cancelled, capture lost): put the stick back instead of
+  // staying "held" for ever, with the camera controls disabled and no roll ever completing.
+  function abortDrag() {
+    if (phaseRef.current !== "held") return;
+    historyRef.current = [];
+    onDragChange(false);
+    document.body.style.cursor = "auto";
+    parkAtRest();
+    setPhase("resting");
+  }
+
   function handlePointerUp(event: ThreeEvent<PointerEvent>) {
     if (phase !== "held") return;
     event.stopPropagation();
     event.nativeEvent.stopImmediatePropagation();
+    // Leave "held" BEFORE releasing the capture: releasing fires lostpointercapture, which
+    // abortDrag() must not mistake for a lost gesture.
+    setPhase("replaying");
     (event.target as Element).releasePointerCapture(event.pointerId);
     onDragChange(false);
     document.body.style.cursor = "auto";
@@ -183,179 +213,82 @@ export function ThrowingStick({
       vz = 0;
     }
 
-    setPhase("rolling");
-    rollingSinceRef.current = performance.now();
-    settledSinceRef.current = null;
-
-    if (body) {
-      body.setBodyType(RigidBodyType.KinematicVelocityBased, true);
-      body.enableCcd(true);
-      body.setLinvel({ x: vx, y: 0, z: vz }, true);
-      // Horizontal speed for the aerial throw calculation.
-      const hSpeed = Math.hypot(vx, vz);
-      const release = body.translation();
-      const vy =
-        hSpeed <= 0
-          ? 0
-          : solveAerialVelocity(
-              release.y,
-              release.z - layout.pinTipRowZ,
-              hSpeed,
-              STICK_STRIKE_HEIGHT,
-              STICK_GRAVITY,
-              MIN_LOB_VY,
-              MAX_LOB,
-            );
-      flightRef.current = { vy, landed: hSpeed <= 0 };
-      // Compute the spin imparted by the impulse: r × v0 with
-      // I = m·L²/12 — the direction and magnitude come from where the stick is held.
-      const spin = computeImpulseSpin(grabOffsetRef.current, [vx, vy, vz], STICK_LENGTH, MAX_SPIN);
-      if (spin.axis) {
-        const [ax, ay, az] = spin.axis;
-        body.setAngvel(
-          { x: ax * spin.angularSpeed, y: ay * spin.angularSpeed, z: az * spin.angularSpeed },
-          true,
-        );
-      } else {
-        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      }
-    }
+    const origin = body?.translation() ?? { x: rest[0], y: rest[1], z: rest[2] };
+    // No gesture (or too soft): the stick is simply dropped where it was released.
+    const hSpeed = Math.hypot(vx, vz);
+    const vy =
+      hSpeed > 0
+        ? solveAerialVelocity(
+            origin.y,
+            origin.z - layout.pinTipRowZ,
+            hSpeed,
+            STICK_STRIKE_HEIGHT,
+            STICK_GRAVITY,
+            MIN_LOB_VY,
+            MAX_LOB,
+            AIM_DRAG_PER_MASS,
+          )
+        : 0;
+    parkAtRest();
+    // A stick dropped without a real gesture is still a roll (of 0 pins): the throw is played all the same.
+    onThrowLaunched({
+      projectile: "stick",
+      launch: {
+        origin: [origin.x, origin.y, origin.z],
+        velocity: [vx, vy, vz],
+        // Where it was held along its axis (the hand encircles the stick: see pendingFromLaunch).
+        gripOffset: grabOffsetRef.current[0],
+      },
+    });
   }
 
-  useFrame((_state, delta) => {
-    if (phaseRef.current === "resting") {
-      // Reset the stick to its resting pose if it has moved or rotated.
-      const body = rigidBodyRef.current;
-      if (body) {
-        const t = body.translation();
-        const dx = t.x - rest[0];
-        const dy = t.y - rest[1];
-        const dz = t.z - rest[2];
-        const q = body.rotation();
-        const twisted =
-          Math.abs(q.x) + Math.abs(q.y) + Math.abs(q.z) + Math.abs(1 - q.w) > 1e-4;
-        if (dx * dx + dy * dy + dz * dz > 0.0001 || twisted) {
-          body.setTranslation(
-            { x: rest[0], y: rest[1], z: rest[2] },
-            true,
-          );
-          body.setRotation(IDENTITY_ROTATION, true);
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        }
-      }
-      return;
-    }
-    if (phaseRef.current !== "rolling") return;
+  // The replay is over: the stick is in hand again.
+  useEffect(() => {
+    if (phaseRef.current === "replaying") setPhase("resting");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishToken]);
+
+  useFrame(() => {
+    if (phaseRef.current !== "resting") return;
+    // Reset the stick to its resting pose if it has moved or rotated.
     const body = rigidBodyRef.current;
     if (!body) return;
-
-    const now = performance.now();
-    const elapsed = now - rollingSinceRef.current;
-
     const t = body.translation();
-    const flight = flightRef.current;
-
-    if (!flight.landed) {
-      // Integrate the stick's ballistic motion for this frame.
-      const step = integrateBallisticStep(
-        { y: t.y, vy: flight.vy, landed: false },
-        stickGroundY(layout, t.x),
-        STICK_GRAVITY,
-        delta,
-      );
-      flight.vy = step.vy;
-      flight.landed = step.landed;
-      body.setTranslation({ x: t.x, y: step.y, z: t.z }, true);
-      if (step.landed) {
-        body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      }
-    }
-
-    const linvel = body.linvel();
-    const linSpeed = Math.hypot(linvel.x, linvel.z);
-
-    const isSlow = flight.landed && linSpeed < SETTLE_LINEAR_THRESHOLD;
-
-    if (isSlow) {
-      settledSinceRef.current ??= now;
-    } else {
-      settledSinceRef.current = null;
-    }
-
-    const settledLongEnough =
-      settledSinceRef.current !== null && now - settledSinceRef.current > SETTLE_DURATION_MS;
-
-    const rollEnded = shouldEndRoll({
-      pinsSettled: arePinsSettled(),
-      ballSettledLongEnough: settledLongEnough,
-      elapsedMs: elapsed,
-      maxRollDurationMs: MAX_ROLL_DURATION_MS,
-      absoluteMaxRollDurationMs: ABSOLUTE_MAX_ROLL_DURATION_MS,
-    });
-
-    if (!rollEnded) {
-      endDetectedAtRef.current = null;
-    } else if (elapsed < ABSOLUTE_MAX_ROLL_DURATION_MS) {
-      // If the roll has ended but the absolute max duration hasn't been reached,
-      endDetectedAtRef.current ??= now;
-      if (now - endDetectedAtRef.current < ROLL_END_GRACE_MS) {
-        return;
-      }
-    }
-
-    if (rollEnded) {
-      flight.vy = 0;
-      flight.landed = true;
-      //Same precaution as in Ball.tsx: disable CCD before teleporting back, otherwise continuous sweep might go through the lane.
-      body.enableCcd(false);
+    const dx = t.x - rest[0];
+    const dy = t.y - rest[1];
+    const dz = t.z - rest[2];
+    const q = body.rotation();
+    const twisted = Math.abs(q.x) + Math.abs(q.y) + Math.abs(q.z) + Math.abs(1 - q.w) > 1e-4;
+    if (dx * dx + dy * dy + dz * dz > 0.0001 || twisted) {
+      body.setTranslation({ x: rest[0], y: rest[1], z: rest[2] }, true);
+      body.setRotation(IDENTITY_ROTATION, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      body.setTranslation(
-        { x: rest[0], y: rest[1], z: rest[2] },
-        true,
-      );
-      // Reset the stick's rotation to the identity quaternion to ensure it starts the next round correctly.
-      body.setRotation(IDENTITY_ROTATION, true);
-      body.setBodyType(RigidBodyType.Fixed, true);
-      setPhase("resting");
-      // Call the onSettled callback to notify that the stick has come to rest.
-      onSettled();
     }
   });
 
-  const bodyType = phase === "held" ? "kinematicPosition" : phase === "resting" ? "fixed" : "kinematicVelocity";
+  const bodyType = phase === "held" ? "kinematicPosition" : "fixed";
 
   return (
-    <RigidBody
-      ref={rigidBodyRef}
-      position={rest}
-      type={bodyType}
-      colliders={false}
-      friction={0.2}
-      frictionCombineRule={CoefficientCombineRule.Min}
-      restitution={0}
-      restitutionCombineRule={CoefficientCombineRule.Min}
-      contactSkin={0.01}
-      ccd={false}
-    >
-          
+    <RigidBody ref={rigidBodyRef} position={rest} type={bodyType} colliders={false} contactSkin={0.01} ccd={false}>
+      {/* The capsule axis is the collider's local Y, i.e. the body's −X. Only used to grab the stick. */}
       <CapsuleCollider args={[STICK_HALF_HEIGHT, STICK_RADIUS]} rotation={[0, 0, Math.PI / 2]} />
       <primitive
         object={clonedScene}
+        visible={!hidden && phase !== "replaying"}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={abortDrag}
+        onLostPointerCapture={abortDrag}
       />
-      {canThrow && phase === "resting" && (
-        <mesh scale={[1, 1, 1]}>
-          <boxGeometry args={[STICK_LENGTH * 1.15, STICK_RADIUS * 3.2, STICK_RADIUS * 3.2]} />
-          <meshBasicMaterial color="#c99a3e" transparent opacity={0.25} depthWrite={false} />
-        </mesh>
-      )}
+      {/* Always mounted, only shown when grabbable: unmounting it disposes its shader, which is recompiled (a stall) at every throw. */}
+      <mesh visible={canThrow && phase === "resting"}>
+        <boxGeometry args={[STICK_LENGTH * 1.15, STICK_RADIUS * 3.2, STICK_RADIUS * 3.2]} />
+        <meshBasicMaterial color="#c99a3e" transparent opacity={0.25} depthWrite={false} />
+      </mesh>
     </RigidBody>
   );
 }

@@ -1,28 +1,12 @@
 import { z } from "zod";
 
-/**
- * Miroir des DTO backend (voir telemis-bowling/docs/architecture/api-rest.md
- * et websocket-stomp.md). Un seul endroit décrit la forme de chaque DTO ;
- * les types TypeScript en sont dérivés (`z.infer`), jamais dupliqués à la main.
- *
- * L'enveloppe générique (`ApiResponse<T>`, `StompEvent<T>`) est validée en
- * deux temps plutôt que via un schéma Zod paramétré par un type générique :
- * composer `z.object({ data: T.nullable() })` pour un `T extends
- * z.ZodTypeAny` produit une inférence de type incorrecte avec cette version
- * de Zod (le champ générique disparaît du type inféré). On valide donc
- * d'abord l'enveloppe à forme fixe (`data`/`payload` en `unknown`), puis le
- * contenu générique séparément avec son propre schéma.
- */
-
+// Mirror of the backend DTOs (see telemis-bowling/docs/architecture/api-rest.md and websocket-stomp.md)
 export const frameStatusSchema = z.enum(["IN_PROGRESS", "OPEN", "SPARE", "STRIKE"]);
 export type FrameStatus = z.infer<typeof frameStatusSchema>;
-
 export const gameSessionStatusSchema = z.enum(["IN_PROGRESS", "COMPLETED", "ABANDONED"]);
 export type GameSessionStatus = z.infer<typeof gameSessionStatusSchema>;
-
 export const lobbyStatusSchema = z.enum(["OPEN", "IN_PROGRESS", "ABANDONED"]);
 export type LobbyStatus = z.infer<typeof lobbyStatusSchema>;
-
 export const frameSnapshotSchema = z.object({
   number: z.number().int(),
   rolls: z.array(z.number().int()),
@@ -30,7 +14,6 @@ export const frameSnapshotSchema = z.object({
   score: z.number().int(),
 });
 export type FrameSnapshot = z.infer<typeof frameSnapshotSchema>;
-
 export const playerStateSnapshotSchema = z.object({
   playerId: z.string().uuid(),
   displayName: z.string(),
@@ -39,12 +22,20 @@ export const playerStateSnapshotSchema = z.object({
   complete: z.boolean(),
 });
 export type PlayerStateSnapshot = z.infer<typeof playerStateSnapshotSchema>;
+export const projectileTypeSchema = z.enum(["ball", "stick"]);
+export const laneSizeSchema = z.enum(["small", "medium", "large"]);
+export type ProjectileSetting = z.infer<typeof projectileTypeSchema>;
+export type LaneSizeSetting = z.infer<typeof laneSizeSchema>;
 
 export const gameSessionSnapshotSchema = z.object({
   gameId: z.string().uuid(),
   status: gameSessionStatusSchema,
   currentPlayerId: z.string().uuid().nullable(),
   players: z.array(playerStateSnapshotSchema),
+  // Chosen by the host, the same for every player. The defaults are what a game WAS before these settings
+  // existed (an older backend sends none): they are not the lobby's preselection .
+  projectile: projectileTypeSchema.default("ball"),
+  laneSize: laneSizeSchema.default("medium"),
 });
 export type GameSessionSnapshot = z.infer<typeof gameSessionSnapshotSchema>;
 
@@ -55,6 +46,41 @@ export const rollUpdateEventSchema = z.object({
   sessionCompleted: z.boolean(),
 });
 export type RollUpdateEvent = z.infer<typeof rollUpdateEventSchema>;
+
+
+const vec3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
+const quatSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), w: z.number() });
+
+export const pinPoseSchema = z.object({
+  index: z.number().int().min(0).max(14),
+  standing: z.boolean(),
+  position: vec3Schema,
+  rotation: quatSchema,
+});
+export type PinPose = z.infer<typeof pinPoseSchema>;
+
+export const throwLaunchSchema = z.object({
+  projectile: projectileTypeSchema,
+  laneSize: laneSizeSchema,
+  origin: vec3Schema,
+  velocity: vec3Schema,
+  gripOffset: z.number().nullable(),
+  rack: z.array(pinPoseSchema),
+});
+export type ThrowLaunchPayload = z.infer<typeof throwLaunchSchema>;
+
+export const throwSnapshotSchema = z.object({
+  throwId: z.string().uuid(),
+  gameId: z.string().uuid(),
+  playerId: z.string().uuid(),
+  attemptIndex: z.number().int(),
+  frameNumber: z.number().int(),
+  status: z.enum(["STARTED", "COMPLETED"]),
+  pinsFelled: z.number().int().nullable(),
+  launch: throwLaunchSchema,
+  startedAtEpochMs: z.number(),
+});
+export type ThrowSnapshot = z.infer<typeof throwSnapshotSchema>;
 
 export const gameStartedPayloadSchema = z.object({
   gameSessionId: z.string().uuid(),
@@ -97,7 +123,6 @@ export const apiErrorSchema = z.object({
 });
 export type ApiErrorPayload = z.infer<typeof apiErrorSchema>;
 
-/** Enveloppe REST à forme fixe (voir note en tête de fichier) : `data` est validé séparément. */
 export const looseApiResponseSchema = z.object({
   success: z.boolean(),
   data: z.unknown().nullable(),
@@ -105,7 +130,6 @@ export const looseApiResponseSchema = z.object({
 });
 export type ApiResponse<T> = { success: boolean; data: T | null; error: ApiErrorPayload | null };
 
-/** Enveloppe STOMP à forme fixe (voir note en tête de fichier) : `payload` est validé séparément. */
 export const looseStompEnvelopeSchema = z.object({
   type: z.string(),
   id: z.string().uuid(),

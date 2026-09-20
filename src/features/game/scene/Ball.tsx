@@ -5,14 +5,11 @@ import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import { BallCollider, RigidBody, type RapierRigidBody } from "@react-three/rapier";
 import { Plane, Vector3 } from "three";
 
-import {
-  BALL_RADIUS,
-  GUTTER_BOTTOM_Y,
-} from "./sceneConstants";
+import { BALL_RADIUS } from "./sceneConstants";
 import type { LaneLayout } from "./laneSizes";
-import { decelerateSpeed, shouldEndRoll } from "./ballRollLogic";
+import type { ThrowCapture } from "../replay/replayTypes";
 
-const BALL_MODEL_URL = "/models/bowling_ball.glb";
+export const BALL_MODEL_URL = "/models/bowling_ball.glb";
 useGLTF.preload(BALL_MODEL_URL);
 const MAX_DRAG_RADIUS = 0.4;
 const MAX_VELOCITY_SAMPLE_RADIUS = 12;
@@ -21,67 +18,52 @@ const MAX_THROW_SPEED = 12; // m/s — avoid absurd throws
 // the 4.2 m between release and the head pin row, a lateral drift of just a few % of the total speed is enough to completely miss the head pin.
 const LATERAL_GESTURE_DAMPING = 0.4;
 const MIN_THROW_SPEED = 0.6; // below this, the ball is considered not really thrown
-const STOP_ZONE_MARGIN = 0.5; // m — margin after the last row before applying deceleration
-const STOP_ZONE_DECELERATION = 8; // m/s² (deceleration rate in the stop zone)
-const VELOCITY_HISTORY_MS = 120; 
-const SETTLE_LINEAR_THRESHOLD = 0.05;
-const SETTLE_ANGULAR_THRESHOLD = 1;
-const SETTLE_DURATION_MS = 300;
-const ROLL_END_GRACE_MS = 3000;
-const MAX_ROLL_DURATION_MS = 14000;
-const ABSOLUTE_MAX_ROLL_DURATION_MS = 22000;
-const GUTTER_REST_Y = GUTTER_BOTTOM_Y + BALL_RADIUS;
-const HEIGHT_FOLLOW_PER_SECOND = 12;
+const VELOCITY_HISTORY_MS = 120;
 
-type Phase = "resting" | "held" | "rolling";
+// "replaying": the throw is played in a private world (see ThrowReplayDirector): the ball waits, hidden, at rest.
+type Phase = "resting" | "held" | "replaying";
 
 type PointerSample = { x: number; z: number; t: number };
 
 /**
- * Ball component representing the physical ball in the game.
- * Handles interaction, rolling, and settling logic.
+ * The ball: grabbed, dragged, released. What happens after the release is not simulated : the
+ * gesture is turned into the launch variables (position, velocity) and handed to the scene, which
+ * plays the throw in a private world, the same one on every client
  */
 export function Ball({
   canThrow,
   onDragChange,
-  onSettled,
-  arePinsSettled,
   layout,
+  onThrowLaunched,
+  hidden = false,
+  finishToken,
 }: {
   canThrow: boolean;
   onDragChange: (isDragging: boolean) => void;
-  onSettled: () => void;
-  //Read each frame whether the pins are settled or not.
-  arePinsSettled: () => boolean;
-  // Track Dimension corresponding to the current lane layout 
+  // Track Dimension corresponding to the current lane layout
   layout: LaneLayout;
+  // The ball was released: how it was launched. The scene plays the throw. 
+  onThrowLaunched: (capture: ThrowCapture) => void;
+  // Another player's throw is being replayed: hide this projectile meanwhile. 
+  hidden?: boolean;
+  // Changes when the replay of this ball's throw is over: the ball comes back to hand. 
+  finishToken?: number;
 }) {
   const { scene } = useGLTF(BALL_MODEL_URL);
   const clonedScene = useMemo(() => scene.clone(), [scene]);
   const rigidBodyRef = useRef<RapierRigidBody>(null);
   const [phase, setPhaseState] = useState<Phase>("resting");
   const historyRef = useRef<PointerSample[]>([]);
-  const settledSinceRef = useRef<number | null>(null);
-  const endDetectedAtRef = useRef<number | null>(null);
-  const rollingSinceRef = useRef(0);
-// useFrame reads phaseRef.current rather than the React state `phase` and is called on every frame.
+  // The handlers below read phaseRef.current rather than the React state `phase` where they must be current at once.
   const phaseRef = useRef<Phase>("resting");
   function setPhase(next: Phase) {
     phaseRef.current = next;
     setPhaseState(next);
   }
 
-  // Those values are derived from the layout and are used to determine the resting position, sliding plane, and stop zone for the ball.
+  // Those values are derived from the layout and are used to determine the resting position and sliding plane for the ball.
   const rest = layout.ballRest;
   const dragPlane = useMemo(() => new Plane(new Vector3(0, 1, 0), -rest[1]), [rest]);
-  const stopZoneZ = useMemo(
-    () =>
-      layout.pinTipRowZ - (layout.pinRowSizes.length - 1) * layout.pinRowSpacing - STOP_ZONE_MARGIN,
-    [layout],
-  );
-  function restHeightFor(x: number): number {
-    return Math.abs(x) <= layout.laneHalfWidth ? rest[1] : GUTTER_REST_Y;
-  }
 
   // cursor signals whether the ball is interactable (grabable) or not.
   useEffect(() => {
@@ -90,7 +72,18 @@ export function Ball({
     }
   }, [canThrow]);
 
-  
+  // Unmounted mid-drag: give the camera controls and the cursor back.
+  useEffect(
+    () => () => {
+      if (phaseRef.current === "held") {
+        onDragChange(false);
+        document.body.style.cursor = "auto";
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // Projects the pointer on the plan of sliding and returns both clamped and raw points.
   function projectPointer(event: ThreeEvent<PointerEvent>): { clamped: Vector3; raw: Vector3 } | null {
     const point = new Vector3();
@@ -141,10 +134,7 @@ export function Ball({
     setPhase("held");
     onDragChange(true);
     document.body.style.cursor = "grabbing";
-    // Imperative for the same reason as release/stop (see below):
-    // the body is still `Fixed` until React recommits the reactive `type` prop,
-    // and `setNextKinematicTranslation` on a `Fixed` body is ignored by Rapier —
-    // the ball would not follow the pointer during the very first drag events.
+    // Imperative for the same reason as release/stop
     rigidBodyRef.current?.setBodyType(RigidBodyType.KinematicPositionBased, true);
   }
 
@@ -171,11 +161,34 @@ export function Ball({
     }
   }
 
+  // The ball goes back to hand: at rest, not moving, out of the way of the replay.
+  function parkAtRest() {
+    const body = rigidBodyRef.current;
+    if (!body) return;
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    body.setTranslation({ x: rest[0], y: rest[1], z: rest[2] }, true);
+    body.setBodyType(RigidBodyType.Fixed, true);
+  }
+
+  // The gesture was taken away (touch cancelled, capture lost): put the ball back instead of
+  // staying "held" for ever, with the camera controls disabled.
+  function abortDrag() {
+    if (phaseRef.current !== "held") return;
+    historyRef.current = [];
+    onDragChange(false);
+    document.body.style.cursor = "auto";
+    parkAtRest();
+    setPhase("resting");
+  }
+
   // Handle the pointer up event, which signifies the end of a drag gesture.
   function handlePointerUp(event: ThreeEvent<PointerEvent>) {
     if (phase !== "held") return;
     event.stopPropagation();
     event.nativeEvent.stopImmediatePropagation();
+    // Leave "held" BEFORE releasing the capture: releasing fires lostpointercapture, which abortDrag() must not mistake for a lost gesture.
+    setPhase("replaying");
     (event.target as Element).releasePointerCapture(event.pointerId);
     onDragChange(false);
     document.body.style.cursor = "auto";
@@ -202,124 +215,38 @@ export function Ball({
       vz = 0;
     }
 
-    setPhase("rolling");
-    rollingSinceRef.current = performance.now();
-    settledSinceRef.current = null;
-
-    if (body) {
-      // KinematicVelocityBased, not Dynamic: the ball pushes the pins but cannot be deflected/slowed down by them.
-      body.setBodyType(RigidBodyType.KinematicVelocityBased, true);
-      body.enableCcd(true);
-      body.setLinvel({ x: vx, y: 0, z: vz }, true);
-      const finalSpeed = Math.hypot(vx, vz);
-      if (finalSpeed > 0) {
-        //  roll without slipping: ω = (n × v) / r, n =  normal srfc (0,1,0)
-        const angularSpeed = finalSpeed / BALL_RADIUS;
-        body.setAngvel({ x: (vz / finalSpeed) * angularSpeed, y: 0, z: (-vx / finalSpeed) * angularSpeed }, true);
-      }
-    }
+    const origin = body?.translation() ?? { x: rest[0], y: rest[1], z: rest[2] };
+    parkAtRest();
+    // A ball released without a real gesture is still a roll (of 0 pins): the throw is played all the same.
+    onThrowLaunched({
+      projectile: "ball",
+      launch: { origin: [origin.x, origin.y, origin.z], velocity: [vx, 0, vz], gripOffset: null },
+    });
   }
 
-  useFrame((_state, delta) => {
-    if (phaseRef.current === "resting") {
-      // Safeguard: the ball must remain EXACTLY at its resting position
-      const body = rigidBodyRef.current;
-      if (body) {
-        const t = body.translation();
-        const dx = t.x - rest[0];
-        const dy = t.y - rest[1];
-        const dz = t.z - rest[2];
-        if (dx * dx + dy * dy + dz * dz > 0.0001) {
-          body.setTranslation(
-            { x: rest[0], y: rest[1], z: rest[2] },
-            true,
-          );
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        }
-      }
-      return;
-    }
-    if (phaseRef.current !== "rolling") return;
+  // The replay is over: the ball is in hand again.
+  useEffect(() => {
+    if (phaseRef.current === "replaying") setPhase("resting");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishToken]);
+
+  useFrame(() => {
+    if (phaseRef.current !== "resting") return;
+    // Safeguard: the ball must remain EXACTLY at its resting position
     const body = rigidBodyRef.current;
     if (!body) return;
-
-    const now = performance.now();
-    const elapsed = now - rollingSinceRef.current;
-
-    // Manual deceleration in two zones (see the comment in
-    // decelerateSpeed for details).
     const t = body.translation();
-    const inStopZone = t.z <= stopZoneZ;
-    const linvel = body.linvel();
-    const currentLinSpeed = Math.hypot(linvel.x, linvel.z);
-    const linSpeed = decelerateSpeed(currentLinSpeed, inStopZone, STOP_ZONE_DECELERATION, delta);
-    if (linSpeed !== currentLinSpeed && currentLinSpeed > 0) {
-      const scale = linSpeed / currentLinSpeed;
-      body.setLinvel({ x: linvel.x * scale, y: 0, z: linvel.z * scale }, true);
-      // Roll without slipping preserved throughout deceleration:
-      // ω = v / BALL_RADIUS remains true at all times (see the derivation
-      // in handlePointerUp), never an angular slowdown independent of linear speed.
-      const angularSpeed = linSpeed / BALL_RADIUS;
-      const ux = linvel.x / currentLinSpeed;
-      const uz = linvel.z / currentLinSpeed;
-      body.setAngvel(linSpeed > 0 ? { x: uz * angularSpeed, y: 0, z: -ux * angularSpeed } : { x: 0, y: 0, z: 0 }, true);
-    }
-    const angSpeed = linSpeed / BALL_RADIUS;
-
-   // Height fully manually controlled (see HEIGHT_FOLLOW_PER_SECOND):
-    const targetY = restHeightFor(t.x);
-    const heightDecay = Math.exp(-HEIGHT_FOLLOW_PER_SECOND * delta);
-    const newY = targetY + (t.y - targetY) * heightDecay;
-    if (Math.abs(newY - t.y) > 1e-5) {
-      body.setTranslation({ x: t.x, y: newY, z: t.z }, true);
-    }
-
-    const isSlow = linSpeed < SETTLE_LINEAR_THRESHOLD && angSpeed < SETTLE_ANGULAR_THRESHOLD;
-
-    if (isSlow) {
-      settledSinceRef.current ??= now;
-    } else {
-      settledSinceRef.current = null;
-    }
-
-    const settledLongEnough =
-      settledSinceRef.current !== null && now - settledSinceRef.current > SETTLE_DURATION_MS;
-
-    const rollEnded = shouldEndRoll({
-      pinsSettled: arePinsSettled(),
-      ballSettledLongEnough: settledLongEnough,
-      elapsedMs: elapsed,
-      maxRollDurationMs: MAX_ROLL_DURATION_MS,
-      absoluteMaxRollDurationMs: ABSOLUTE_MAX_ROLL_DURATION_MS,
-    });
-
-    if (!rollEnded) {
-      endDetectedAtRef.current = null;
-    } else if (elapsed < ABSOLUTE_MAX_ROLL_DURATION_MS) {
-      // Delay before considering the roll ended: the closure (scoring, teleport, next turn)
-      endDetectedAtRef.current ??= now;
-      if (now - endDetectedAtRef.current < ROLL_END_GRACE_MS) {
-        return;
-      }
-    }
-
-    if (rollEnded) {
-      body.enableCcd(false);
+    const dx = t.x - rest[0];
+    const dy = t.y - rest[1];
+    const dz = t.z - rest[2];
+    if (dx * dx + dy * dy + dz * dz > 0.0001) {
+      body.setTranslation({ x: rest[0], y: rest[1], z: rest[2] }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      body.setTranslation(
-        { x: rest[0], y: rest[1], z: rest[2] },
-        true,
-      );
-      body.setBodyType(RigidBodyType.Fixed, true);
-      setPhase("resting");
-      // Same treatment as with ThrowingStick.tsx — the ball is already parked at its rest position before the scoring chain runs, so a failure downstream never leaves the ball out of position for the next frame.
-      onSettled();
     }
   });
 
-  const bodyType = phase === "held" ? "kinematicPosition" : phase === "resting" ? "fixed" : "kinematicVelocity";
+  const bodyType = phase === "held" ? "kinematicPosition" : "fixed";
 
   return (
     <RigidBody
@@ -337,19 +264,21 @@ export function Ball({
       <BallCollider args={[BALL_RADIUS]} />
       <primitive
         object={clonedScene}
+        visible={!hidden && phase !== "replaying"}
         position={[0, -BALL_RADIUS, 0]}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={abortDrag}
+        onLostPointerCapture={abortDrag}
       />
-      {canThrow && phase === "resting" && (
-        <mesh scale={1.18}>
-          <sphereGeometry args={[BALL_RADIUS, 24, 24]} />
-          <meshBasicMaterial color="#c99a3e" transparent opacity={0.25} depthWrite={false} />
-        </mesh>
-      )}
+      {/* Always mounted, only shown when grabbable: unmounting it disposes its shader, which is recompiled (a stall) at every throw. */}
+      <mesh scale={1.18} visible={canThrow && phase === "resting"}>
+        <sphereGeometry args={[BALL_RADIUS, 24, 24]} />
+        <meshBasicMaterial color="#c99a3e" transparent opacity={0.25} depthWrite={false} />
+      </mesh>
     </RigidBody>
   );
 }

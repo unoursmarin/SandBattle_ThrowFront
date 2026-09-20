@@ -6,6 +6,8 @@ export const LANE_SURFACE_HALF_THICKNESS = 0.04; // m
 
 //  used for bowling mode it doesn't have much friction for the bowl, 
 export const LANE_SURFACE_RESTITUTION = 0.05;
+/** Same value as Rapier's default (0.5): this constant was imported by Lane.tsx but never defined. */
+export const LANE_SURFACE_FRICTION = 0.5;
 
 // ---------------------------------------------------------------------------
 // Gutter
@@ -41,6 +43,10 @@ export const PIN_LINEAR_DAMPING = 0.1;
 export const PIN_ANGULAR_DAMPING = 0.1;
 export const PIN_GRAVITY_SCALE = 0.4;
 export const PIN_CONTACT_SKIN = 0.005;
+/** Same grip for a pin lying or tilted on the lane or the sand (Rapier has no rolling resistance): m/s² while it touches the ground. */
+export const PIN_ROLLING_DECEL = 0.8;
+/** A pin is set down this much above the lane: it never starts in exact interpenetration with it. */
+export const PIN_SPAWN_Y_OFFSET = 0.002; // m
 
 export const PIN_LOWER_CAPSULE_RADIUS = PIN_RADIUS * 0.89; // ≈ 0.055 m
 export const PIN_UPPER_CAPSULE_RADIUS = PIN_RADIUS * 0.45; // ≈ 0.028 m
@@ -67,17 +73,15 @@ const lowerCapsuleVolume = capsuleVolume(PIN_LOWER_CAPSULE_RADIUS, PIN_LOWER_CAP
 const upperCapsuleVolume = capsuleVolume(PIN_UPPER_CAPSULE_RADIUS, PIN_UPPER_CAPSULE_HALF_HEIGHT);
 const totalCapsuleVolume = lowerCapsuleVolume + upperCapsuleVolume;
 
-/** Masse de chaque capsule, au prorata de son volume réel (densité uniforme). */
+// Mass of each capsule, proportional to its actual volume (uniform density).
 export const PIN_LOWER_CAPSULE_MASS = PIN_MASS * (lowerCapsuleVolume / totalCapsuleVolume);
 export const PIN_UPPER_CAPSULE_MASS = PIN_MASS - PIN_LOWER_CAPSULE_MASS;
 
 // ---------------------------------------------------------------------------
-// Pin position (voir pinPositions.ts)
+// Pin position 
 // ---------------------------------------------------------------------------
 
-/**
- * 15 pin placed in triangle
- */
+// 15 pins placed in a triangle
 export const PIN_ROW_SIZES = [1, 2, 3, 4, 5];
 /** Distance entre rangées (axe Z, vers le joueur). */
 export const PIN_ROW_SPACING = 0.24; // m
@@ -99,24 +103,89 @@ export const CAVE_POSITION: [number, number, number] = [0.18, -1.48, -LANE_HALF_
 
 export const BALL_RADIUS = 0.108; // m
 
-/** Position of the bow at start */
+// Position of the bow at start
 export const BALL_REST_POSITION: [number, number, number] = [0, BALL_RADIUS, LANE_HALF_LENGTH - 0.4];
 
 
 // ---------------------------------------------------------------------------
-// Bâton de lancer (voir ThrowingStick.tsx, throwing_stick.glb)
+// ThrowStick
 // ---------------------------------------------------------------------------
 
-/**
- *  height of the stick at start
- */
+// Height of the stick at start
 export const STICK_REST_HEIGHT = 0.6; // m
 
-/** Length of the stick */
+// Length of the stick
 export const STICK_LENGTH = 0.6; // m
-/** radius o the stick. */
+// Radius of the stick.
 export const STICK_RADIUS = 0.035; // m
-/**
- * center of the stick
- */
+// Half-length of the capsule's cylindrical part (Rapier capsule: total = 2·halfHeight + 2·radius)
 export const STICK_HALF_HEIGHT = STICK_LENGTH / 2 - STICK_RADIUS;
+
+// ---------------------------------------------------------------------------
+// Physics of the stick (dynamic, see stickAerodynamics.ts)
+// ---------------------------------------------------------------------------
+
+// Total mass (rod + tip). Pins weigh PIN_MASS = 0.1 kg: the stick must be able to knock them down.
+export const STICK_MASS = 0.3; // kg
+//  a point mass at +X (local) that shifts the center of mass toward the tip
+// The aerodynamic center of pressure stays at the geometric center, so it sits
+// BEHIND the center of mass: that lever arm is what aligns the stick with its trajectory.
+export const STICK_TIP_MASS = 0.03; // kg
+export const STICK_TIP_OFFSET = STICK_LENGTH / 2 - 0.02; // m, along local +X
+export const STICK_ROD_MASS = STICK_MASS - STICK_TIP_MASS; // kg
+// Local axis of the stick, oriented rod → tip (the capsule collider lies along X).
+export const STICK_TIP_AXIS: [number, number, number] = [1, 0, 0];
+
+// High friction: an end that hits the lane stops, the rest of the stick tumbles over it. 
+export const STICK_FRICTION = 0.8;
+export const STICK_RESTITUTION = 0;
+// Low angular damping for the stick's tumble. Air resistance is anisotropic (no native linearDamping).
+export const STICK_ANGULAR_DAMPING = 0.1;
+// Rolling resistance of the stick on the lane.
+export const STICK_GROUND_ANGULAR_DAMPING = 4;
+export const STICK_LINEAR_DAMPING = 0;
+// Rolling deceleration of the stick on the lane.
+export const STICK_ROLLING_DECEL = 0.8;
+
+// Threshold speed below which the stick is considered to have settled on the lane.
+export const STICK_SETTLE_SPEED = 0.08;
+
+// Axial spin (rad/s) given by the "hand release snap" at the maximum throw speed.
+export const STICK_SNAP_SPIN = 4;
+
+// Center of pressure behind the geometric center (opposite to the tip): weathervane lever arm.
+export const STICK_CP_AFT_OFFSET = 0.06; // m
+// Aerodynamic damping of transverse rotations.   τ = −c·|v|·ω⊥ (N·m·s²/m).
+export const STICK_ROTATIONAL_DAMPING = 0.0008;
+
+// Effective air density (kg/m³) and drag coefficient of a cylinder.
+export const STICK_AIR_DENSITY = 1.2;
+export const STICK_DRAG_COEFFICIENT = 1.0;
+// Cross sections: head-on (π·r²) and broadside (diameter × length).
+export const STICK_TIP_AREA = Math.PI * STICK_RADIUS * STICK_RADIUS; // m²
+export const STICK_SIDE_AREA = 2 * STICK_RADIUS * STICK_LENGTH; // m²
+
+// ---------------------------------------------------------------------------
+// Sand
+// ---------------------------------------------------------------------------
+
+// Top of the beach plateau (the mesh varies between −0.09 and −0.11): below the lane (0) and the gutter floor (−0.06).
+export const SAND_SURFACE_Y = -0.1; // m
+// The plateau of beach.glb: ±9 m along X, ±8 m along Z; beyond that the mesh drops away.
+export const BEACH_HALF_WIDTH = 9; // m
+export const BEACH_HALF_LENGTH = 8; // m
+export const SAND_FRICTION = 1;
+export const SAND_RESTITUTION = 0;
+
+// Stick planting: the axis must be at least this steep (|axis.y| = sin of the angle to the horizontal, 0.5 ≈ 30°)...
+export const SAND_PLANT_MIN_TILT = 0.5;
+// ...and the impact must be at least this fast, vertically (m/s). Otherwise the stick just stops, lying. 
+export const SAND_PLANT_MIN_SPEED = 1;
+// Depth of the lowest point per m/s of impact speed (m), and the most stick that can go in, along its axis (m).
+export const SAND_PLANT_DEPTH_PER_SPEED = 0.04;
+export const SAND_PLANT_MAX_EMBEDDED_LENGTH = 0.25;
+// Contact is anticipated one step ahead and detected within this skin (m).
+export const SAND_CONTACT_SKIN = 0.005;
+
+// A pin whose center is this far beyond the lane (gutter included) rests on the sand: it is out of play.
+export const PIN_OFF_LANE_MARGIN = 0.02; // m

@@ -1,17 +1,15 @@
 import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { CapsuleCollider, CoefficientCombineRule, RigidBody, type RapierRigidBody } from "@react-three/rapier";
-import { Quaternion, Vector3 } from "three";
 import {
   GUTTER_OUTER_HALF_WIDTH,
   LANE_HALF_LENGTH,
-  PIN_ANGULAR_DAMPING,
   PIN_CONTACT_SKIN,
   PIN_FRICTION,
-  PIN_GRAVITY_SCALE,
-  PIN_LINEAR_DAMPING,
   PIN_LOWER_CAPSULE_CENTER_Y,
   PIN_LOWER_CAPSULE_HALF_HEIGHT,
+  PIN_OFF_LANE_MARGIN,
+  PIN_SPAWN_Y_OFFSET,
   PIN_LOWER_CAPSULE_MASS,
   PIN_LOWER_CAPSULE_RADIUS,
   PIN_RESTITUTION,
@@ -20,52 +18,19 @@ import {
   PIN_UPPER_CAPSULE_MASS,
   PIN_UPPER_CAPSULE_RADIUS,
 } from "./sceneConstants";
-import { isPositionOffLane } from "./pinSettleLogic";
+import { createPinController, type PinBodyPose, type PinHandle } from "./pinController";
 
-const PIN_MODEL_URL = "/models/bowling_pin.glb";
+export type { PinBodyPose, PinHandle };
+
+export const PIN_MODEL_URL = "/models/bowling_pin.glb";
 useGLTF.preload(PIN_MODEL_URL);
 
-const UP = new Vector3(0, 1, 0);
-/** ~60° inclination: beyond this, the pin is considered fallen. */
-const FALLEN_UP_DOT_THRESHOLD = 0.5;
-const IDENTITY_ROTATION = { x: 0, y: 0, z: 0, w: 1 };
-const LYING_ROTATION = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 2.3);
-const MOTION_LINEAR_THRESHOLD = 0.05;
-const MOTION_ANGULAR_THRESHOLD = 0.5;
-// Slight offset above the lane: prevents a pin from resting in exact interpenetration
-const SPAWN_Y_OFFSET = 0.002;
-// Broad bounds of the playable area: a pin ejected beyond this (thrown off-lane by a violent impact) should be considered settled immediately, without waiting for its velocity to drop below the motion thresholds. With PIN_GRAVITY_SCALE=0.4 (fall slightly slowed), a pin in the air far from the lane could take much longer than usual to pass under MOTION_LINEAR_THRESHOLD / MOTION_ANGULAR_THRESHOLD, which would delay the scoring unnecessarily (see PinRack, which excludes an "off-lane" pin from the stability wait).
+// Broad bounds of the playable area: a pin beyond this is out of play, whatever its pose.
 const OFF_LANE_BOUNDS = {
-  maxAbsX: GUTTER_OUTER_HALF_WIDTH + 0.3, // m
-  maxAbsZ: LANE_HALF_LENGTH + 1, // m
+  maxAbsX: GUTTER_OUTER_HALF_WIDTH + PIN_OFF_LANE_MARGIN, // m — beyond the gutter, a pin rests on the sand
+  maxAbsZ: LANE_HALF_LENGTH + PIN_OFF_LANE_MARGIN, // m
   minY: -1, // m — safety net if a pin falls below the world
 };
-
-export interface PinHandle {
-  /** Reads the actual inclination of the rigid body — never a React state. */
-  isFallen(): boolean;
-  /** True if the pin still has significant linear/angular velocity. */
-  isMoving(): boolean;
-  /** True if the pin is out of the playable area (see OFF_LANE_*). */
-  isOffLane(): boolean;
-  /**
-   * True if the pin should no longer be counted as "standing" for the score:
-   * fallen (see `isFallen`) OR off-lane (see `isOffLane`). 
-   */
-  isOutOfPlay(): boolean;
-  /** Raises pin to its original position, resets velocities, and reintegrates it into the game (see `retire`). */
-  reset(): void;
-  /** Instantly lays the pin down (synchronization of a remote throw, see PinRack), then removes it (see `retire`). */
-  forceDown(): void;
-  /**
-   * Removes the pin from the game for the rest of the round: disabled
-   * (no more collision, `RigidBody.setEnabled(false)`) and hidden, so that
-   * it no longer interferes with the ball or other pins on subsequent
-   * throws of the same round. Reversed by `reset()` at the beginning of the
-   * next round (fresh rack).
-   */
-  retire(): void;
-}
 
 // Colliders for the pin: two stacked `CapsuleCollider`s (wide bottom, narrow top) rather than an encompassing `cuboid` or a collision mesh. See sceneConstants.ts for detailed measurements/masses and reasoning about the lowered center of mass. Modularized separately from `Pin` to clearly separate collision geometry from game logic.
 function PinColliders() {
@@ -94,7 +59,10 @@ function PinColliders() {
 }
 
 /**
- * Physical pin: dynamic rigid body toppled by real collision with the ball (see docs/architecture/3d-rendering.md) — no more scripted lerp. `PinRack` queries `isOutOfPlay()` on each pin once the ball is stationary to count pins no longer in play for that throw (fallen or off-lane, see `isOutOfPlay`).
+ * A pin of the scene's rack. It is INERT: a fixed body whose pose is set by code (a fresh frame, or
+ * where a replayed throw left it), never by physics: the physics of a throw is played in a private
+ * world (see replay/replayWorld.ts). `PinRack` asks each pin `isOutOfPlay()` to count the ones that
+ * still stand (retired, fallen or off the playable area do not).
  */
 export const Pin = forwardRef<PinHandle, { position: [number, number, number]; bounds?: typeof OFF_LANE_BOUNDS }>(function Pin(
   { position, bounds = OFF_LANE_BOUNDS },
@@ -103,74 +71,20 @@ export const Pin = forwardRef<PinHandle, { position: [number, number, number]; b
   const { scene } = useGLTF(PIN_MODEL_URL);
   const clonedScene = useMemo(() => scene.clone(), [scene]);
   const rigidBodyRef = useRef<RapierRigidBody>(null);
-
-  function isFallen(): boolean {
-    const body = rigidBodyRef.current;
-    if (!body) return false;
-    const q = body.rotation();
-    const localUp = UP.clone().applyQuaternion(new Quaternion(q.x, q.y, q.z, q.w));
-    return localUp.dot(UP) < FALLEN_UP_DOT_THRESHOLD;
-  }
-
-  function isOffLane(): boolean {
-    const body = rigidBodyRef.current;
-    if (!body) return false;
-    return isPositionOffLane(body.translation(), bounds);
-  }
-
-  useImperativeHandle(ref, () => ({
-    isFallen,
-    isMoving() {
-      const body = rigidBodyRef.current;
-      if (!body) return false;
-      const lin = body.linvel();
-      const ang = body.angvel();
-      return (
-        Math.hypot(lin.x, lin.y, lin.z) > MOTION_LINEAR_THRESHOLD ||
-        Math.hypot(ang.x, ang.y, ang.z) > MOTION_ANGULAR_THRESHOLD
-      );
-    },
-    isOffLane,
-    isOutOfPlay() {
-      return isFallen() || isOffLane();
-    },
-    reset() {
-      const body = rigidBodyRef.current;
-      if (!body) return;
-      body.setTranslation({ x: position[0], y: position[1] + SPAWN_Y_OFFSET, z: position[2] }, true);
-      body.setRotation(IDENTITY_ROTATION, true);
-      body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-      body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      body.setEnabled(true);
-      clonedScene.visible = true;
-    },
-    forceDown() {
-      const body = rigidBodyRef.current;
-      if (!body) return;
-      body.setEnabled(true); // le corps doit être actif pour repositionner sa pose avant de le retirer
-      body.setTranslation({ x: position[0], y: position[1] + SPAWN_Y_OFFSET, z: position[2] }, true);
-      body.setRotation(LYING_ROTATION, true);
-      body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-      body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-      body.setEnabled(false);
-      clonedScene.visible = false;
-    },
-    retire() {
-      const body = rigidBodyRef.current;
-      if (!body) return;
-      body.setEnabled(false);
-      clonedScene.visible = false;
-    },
-  }));
+  // The pin's behaviour is in pinController.ts (testable without a scene); it reads the body at every call.
+  const controller = useMemo(
+    () => createPinController({ getBody: () => rigidBodyRef.current, view: clonedScene, spot: position, bounds }),
+    [clonedScene, position, bounds],
+  );
+  useImperativeHandle(ref, () => controller, [controller]);
 
   return (
     <RigidBody
       ref={rigidBodyRef}
-      position={[position[0], position[1] + SPAWN_Y_OFFSET, position[2]]}
+      position={[position[0], position[1] + PIN_SPAWN_Y_OFFSET, position[2]]}
+      // FIXED: a pin here never moves by itself. Where it stands is decided by code (reset, or where a replayed throw left it).
+      type="fixed"
       colliders={false}
-      linearDamping={PIN_LINEAR_DAMPING}
-      angularDamping={PIN_ANGULAR_DAMPING}
-      gravityScale={PIN_GRAVITY_SCALE}
     >
       <PinColliders />
       <primitive object={clonedScene} />

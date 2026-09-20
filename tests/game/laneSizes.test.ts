@@ -5,6 +5,7 @@ import {
   isLaneSize,
   LANE_LAYOUTS,
   LANE_SIZES,
+  laneSizeFor,
 } from "../../src/features/game/scene/laneSizes";
 import { buildPinPositions } from "../../src/features/game/scene/pinPositions";
 import { loadLaneSize, saveLaneSize } from "../../src/lib/session/sessionStorage";
@@ -21,6 +22,20 @@ describe("isLaneSize", () => {
     expect(isLaneSize("huge")).toBe(false);
     expect(isLaneSize(null)).toBe(false);
     expect(isLaneSize(undefined)).toBe(false);
+  });
+});
+
+describe("laneSizeFor", () => {
+  it("impose la petite piste avec le bâton, quelle que soit la taille choisie", () => {
+    for (const chosen of LANE_SIZES) {
+      expect(laneSizeFor("stick", chosen)).toBe("small");
+    }
+  });
+
+  it("garde la taille choisie avec la boule", () => {
+    for (const chosen of LANE_SIZES) {
+      expect(laneSizeFor("ball", chosen)).toBe(chosen);
+    }
   });
 });
 

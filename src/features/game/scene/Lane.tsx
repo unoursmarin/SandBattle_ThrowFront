@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { useGLTF } from "@react-three/drei";
 import { CoefficientCombineRule, CuboidCollider, RigidBody } from "@react-three/rapier";
 import { buildGutterColliderSpecs } from "./laneColliders";
@@ -42,7 +43,8 @@ function LanePhysicsColliders({ layout }: { layout: LaneLayout }) {
   );
 }
 
-export function Lane({ layout }: { layout: LaneLayout }) {
+/** Static: memoized so that a change of game state does not re-render (and re-reconcile) the whole lane. */
+export const Lane = memo(function Lane({ layout }: { layout: LaneLayout }) {
   const { scene } = useGLTF(layout.laneModelUrl);
   return (
     <RigidBody type="fixed" colliders={false}>
@@ -50,4 +52,4 @@ export function Lane({ layout }: { layout: LaneLayout }) {
       <LanePhysicsColliders layout={layout} />
     </RigidBody>
   );
-}
+});

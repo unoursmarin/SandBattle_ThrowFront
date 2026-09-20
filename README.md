@@ -24,6 +24,7 @@ Front-end du jeu **Telemis Bowl** : un bowling 3D multijoueur en temps réel (th
 - [Démarrage rapide](#démarrage-rapide)
 - [Flux applicatif : du lobby à la partie](#flux-applicatif--du-lobby-à-la-partie)
 - [Flux applicatif : un lancer](#flux-applicatif--un-lancer)
+- [Replay des lancers](#replay-des-lancers)
 - [Scène 3D et assets](#scène-3d-et-assets)
 - [Tests et qualité](#tests-et-qualité)
 - [Design system](#design-system)
@@ -34,16 +35,20 @@ Front-end du jeu **Telemis Bowl** : un bowling 3D multijoueur en temps réel (th
 
 - **15 quilles** (pas 10), disposées en triangle sur 5 rangées (`PIN_ROW_SIZES = [1, 2, 3, 4, 5]`).
 - Un **strike** correspond à faire tomber les 15 quilles au premier lancer de la frame.
-- Le score de la partie est calculé **côté backend** : le front n'envoie que le nombre de quilles tombées à chaque lancer et affiche l'état renvoyé par le serveur.
+- Le score de la partie est calculé **côté backend** : le front envoie le nombre de quilles tombées à chaque lancer (mesuré par la simulation physique locale du lancer, voir [Replay des lancers](#replay-des-lancers)) et affiche l'état renvoyé par le serveur.
 - Deux façons de jouer : lancer une **boule** (roulée sur la piste) ou un **bâton** (lancé en cloche, trajectoire balistique).
-- Trois tailles de piste (`small` / `medium` / `large`) ; le mode bâton impose la petite piste.
+- Trois tailles de piste (`small` / `medium` / `large`).
+- **L'hôte choisit l'objet de lancer et la taille de piste pour toute la partie** ; ces réglages sont envoyés au démarrage (`POST /lobbies/{id}/start`) et reviennent dans le snapshot de la partie. Le lobby ne propose la taille de piste qu'avec la boule ; le bâton impose la petite piste (`laneSizeFor`), quelle que soit la taille mémorisée dans l'onglet de l'hôte, qui est conservée si l'hôte repasse à la boule.
 
 ## Fonctionnalités
 
-- **Lobby partageable** : identifiant de lobby copiable en un clic, statut « prêt » par joueur, démarrage réservé à l'hôte (le solo est volontairement autorisé).
+- **Lobby partageable** : tiroir d'invitation repliable (`InviteDrawer`, fermeture par Échap ou clic extérieur) avec l'identifiant de lobby copiable en un clic, statut « prêt » par joueur, démarrage réservé à l'hôte (le solo est volontairement autorisé).
+- **Réglages de partie par l'hôte** : objet de lancer (boule ou bâton) et taille de piste, appliqués à tous les joueurs. Les autres joueurs voient un message leur indiquant que l'hôte choisit.
 - **Temps réel** via WebSocket STOMP : la liste des joueurs, les lancers et le score courant sont poussés instantanément à tous les participants.
-- **Scène 3D physique** : piste, râtelier de 15 quilles, décor (plage, grotte, palmiers), ciel dynamique, confettis animés pour les strikes/spares/fins de partie.
-- **Gestuelle de lancer** : glisser-relâcher à la souris/au doigt, vitesse calculée à partir de l'historique du pointeur.
+- **Replay des lancers** : quand un joueur relâche son projectile, les autres joueurs voient ce lancer se rejouer dans leur propre scène, et le score n'apparaît qu'une fois le lancer vu. Détails dans [Replay des lancers](#replay-des-lancers).
+- **Scène 3D physique** : piste, râtelier de 15 quilles, décor (plage, grotte, palmiers, sable), ciel dynamique, confettis animés pour les strikes/spares/fins de partie.
+- **Gestuelle de lancer** : glisser-relâcher à la souris/au doigt, vitesse calculée à partir de l'historique du pointeur. Le bâton se saisit en un point de sa longueur (`gripOffset`), qui fait partie des variables du lancer.
+- **Physique du bâton** : modèle aérodynamique (`stickAerodynamics.ts`), propriétés de masse (`stickMassProperties.ts`), impact dans le sable (`stickSandImpact.ts`) et résistance au roulement (`rollingResistance.ts`).
 - **Robustesse d'affichage** : repli explicite si WebGL est indisponible, et récupération automatique après perte du contexte graphique (GPU driver crash, onglet mis en veille, etc.).
 - **Accessibilité** : respect de `prefers-reduced-motion` (désactivation des animations non essentielles), annonces `aria-live` pour les changements de tour et de statut.
 - **Isolation par onglet** : chaque session de jeu est stockée dans `sessionStorage`, pas `localStorage`, pour permettre d'ouvrir plusieurs joueurs dans des onglets différents du même navigateur.
@@ -56,11 +61,11 @@ Front-end du jeu **Telemis Bowl** : un bowling 3D multijoueur en temps réel (th
 | État serveur / cache | TanStack Query 5 |
 | Temps réel | `@stomp/stompjs` 7, RxJS 7 |
 | Rendu 3D | Three.js, `@react-three/fiber` 9, `@react-three/drei` 10 |
-| Physique | `@react-three/rapier` 2 (`@dimforge/rapier3d-compat`) |
+| Physique | `@react-three/rapier` 2 (`@dimforge/rapier3d-compat`, version **épinglée** à `0.19.2` : le replay repose sur la même simulation chez tous les clients) |
 | Validation | Zod 4 |
 | Style | Tailwind CSS 4, tokens CSS maison |
 | Animation UI | Framer Motion 13, `vegas` (diaporama du lobby) |
-| Build / test / lint | Vite 8, Vitest 5, oxlint, oxfmt |
+| Build / test / lint | Vite 8, Vitest 5 (+ `@vitest/coverage-v8`), oxlint, oxfmt |
 | Pipeline 3D (assets) | `@gltf-transform/*`, `obj2gltf`, `sharp` |
 
 ## Architecture
@@ -87,6 +92,8 @@ graph TD
         StompSub["lib/stomp/useStompSubscription.ts"]
         StompClient["lib/stomp/client.ts (connexion STOMP unique, RxJS)"]
         StompHooks --> StompSub --> StompClient
+        Router["gameMessageRouter (rollRegistered / throwStarted)"]
+        StompHooks --> Router
     end
 
     Home --> Hooks
@@ -97,7 +104,8 @@ graph TD
 
     Cache["Cache TanStack Query"]
     Hooks --> Cache
-    StompHooks -->|"setQueryData"| Cache
+    Router -->|"rollRegistered (retenu pendant un replay)"| Cache
+    Router -->|"throwStarted"| Game
     Cache --> Home
     Cache --> Lobby
     Cache --> Game
@@ -107,10 +115,12 @@ graph TD
         Physics["Physics (Rapier)"]
         Lane["Lane / PinRack / Pin"]
         Projectile["Ball ou ThrowingStick"]
+        Replay["ThrowReplayDirector (monde Rapier privé)"]
         Decor["Decor, ConfettiEmitters, OrbitControls"]
         BowlingScene --> Physics
         Physics --> Lane
         Physics --> Projectile
+        BowlingScene --> Replay
         BowlingScene --> Decor
     end
 
@@ -127,10 +137,10 @@ graph TD
 src/
 ├── app/                 # Point d'entrée, routing (routes.tsx)
 ├── features/
-│   ├── lobby/            # Écran d'accueil + salle d'attente
+│   ├── lobby/            # Écran d'accueil + salle d'attente (réglages de l'hôte, tiroir d'invitation)
 │   ├── game/              # Partie en cours
-│   │   └── scene/         # Composants React Three Fiber (piste, quilles, projectiles)
-│   └── preview/           # ⚠️ temporaire, généré pour des captures d'écran — non destiné à rester
+│   │   ├── replay/        # Rejeu déterministe des lancers (monde Rapier privé, score, charge utile)
+│   │   └── scene/         # Composants React Three Fiber (piste, quilles, projectiles) + simulation du lancer
 ├── components/ui/        # Composants UI de base (bouton, carte, input, label)
 ├── lib/
 │   ├── api/               # Client HTTP + endpoints REST + schémas Zod
@@ -143,10 +153,10 @@ src/
 public/
 ├── models/                # Modèles 3D .glb consommés par la scène
 └── fonts/                 # Polices auto-hébergées
-tests/game/                # Tests unitaires (Vitest) sur la logique pure
+tests/game/                # Tests Vitest : logique pure + simulations Rapier (*.rapier.test.ts)
 ```
 
-Règle de découpage observée dans le code : la **logique pure** (calcul de scores, physique du lancer, tailles de piste) est extraite dans des fichiers `.ts` testables indépendamment des composants React/R3F (`frameDisplay.ts`, `gameCache.ts`, `scene/ballRollLogic.ts`, `scene/pinSettleLogic.ts`, `scene/stickThrowLogic.ts`, `lib/throw/stickThrowMath.ts`).
+Règle de découpage observée dans le code : la **logique pure** (calcul de scores, physique du lancer, tailles de piste, replay) est extraite dans des fichiers `.ts` testables indépendamment des composants React/R3F (`frameDisplay.ts`, `gameCache.ts`, `gameMessageRouter.ts`, `scene/ballRollLogic.ts`, `scene/ballThrowSim.ts`, `scene/stickThrowSim.ts`, `scene/pinSettleLogic.ts`, `scene/rackLogic.ts`, `scene/stickThrowLogic.ts`, `replay/replayOutcome.ts`, `replay/throwPayload.ts`, `replay/pendingThrow.ts`, `lib/throw/stickThrowMath.ts`).
 
 ## Démarrage rapide
 
@@ -173,6 +183,7 @@ Aucune variable d'environnement n'est nécessaire : `vite.config.ts` proxifie d�
 | `npm run build` | `tsc -b && vite build` — build de production dans `dist/` |
 | `npm run preview` | Sert le build de production localement |
 | `npm run test` | Exécute les tests Vitest |
+| `npm run test:coverage` | Tests avec couverture v8 (rapport texte) sur `src/features/game/**/*.ts` et `src/lib/api/**/*.ts` |
 | `npm run lint` | Lint via oxlint |
 
 Le projet référence aussi des scripts de génération/optimisation de modèles 3D :
@@ -224,28 +235,39 @@ sequenceDiagram
     actor Joueur
     participant Scene as Ball / ThrowingStick
     participant BowlingScene
+    participant Replay as ThrowReplayDirector
     participant GameScreen
-    participant API as API REST /games/{id}/rolls
+    participant API as API REST /games/{id}
     participant Broker as STOMP /topic/games/{id}
     actor Autres as Autres joueurs
 
-    Note over Joueur,GameScreen: canThrow = jeton présent ET c'est le tour du joueur ET aucune mutation en cours
+    Note over Joueur,GameScreen: canThrow = jeton présent ET c'est le tour du joueur ET aucune mutation en cours ET aucun envoi de lancer en cours
 
     Joueur->>Scene: pointerDown (saisit le projectile)
     Scene->>Scene: phase resting → held
     Joueur->>Scene: glisser (échantillonnage de la vitesse sur ~120ms)
     Joueur->>Scene: pointerUp (relâche)
-    Scene->>Scene: phase held → rolling (vitesse calculée, corps physique cinématique)
-    Scene-->>BowlingScene: onSettled() une fois les quilles stabilisées
-    BowlingScene->>BowlingScene: pinsFelled = quilles debout avant − après
-    BowlingScene->>GameScreen: onRollComplete(pinsFelled)
-    GameScreen->>API: POST /games/{id}/rolls {pins: pinsFelled}
+    Scene->>Scene: phase held → replaying (projectile masqué)
+    Scene-->>BowlingScene: onThrowLaunched(origine, vitesse, gripOffset)
+    BowlingScene->>BowlingScene: snapshotPins() : état du râtelier au relâchement
+    BowlingScene->>GameScreen: onThrowLaunched(lancer + râtelier)
+    GameScreen->>API: POST /throws (sans bloquer le lancer)
+    API->>Broker: throwStarted {ThrowSnapshot}
+    Broker-->>Autres: throwStarted
+    Autres->>Autres: rejeu du lancer, rollRegistered retenus
+
+    BowlingScene->>Replay: rejeu de MON lancer (own = true)
+    Replay->>Replay: simulation à pas fixes jusqu'à l'arrêt
+    Replay-->>BowlingScene: onFinished({felled, finalPins})
+    BowlingScene->>GameScreen: onRollComplete(felled)
+    GameScreen->>GameScreen: attend le throwId (1,5 s max)
+    GameScreen->>API: POST /rolls {pins: felled, throwId}
     API-->>GameScreen: RollUpdateEvent
-    GameScreen->>GameScreen: mergeRollUpdate() dans le cache local
-    API->>Broker: rediffusion du RollUpdateEvent
-    Broker-->>Autres: RollUpdateEvent
-    Autres->>Autres: mergeRollUpdate() met à jour leur tableau des scores
-    Scene->>Scene: phase rolling → resting (repositionnement, délai de grâce)
+    GameScreen->>GameScreen: applyRollUpdate() dans le cache local
+    API->>Broker: rollRegistered (RollUpdateEvent)
+    Broker-->>Autres: rollRegistered
+    Autres->>Autres: fin du rejeu, puis flushDeferred() met à jour le tableau des scores
+    Scene->>Scene: phase replaying → resting (projectile remis en main)
 ```
 
 ### Machine à états du projectile
@@ -254,21 +276,50 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> resting
     resting --> held: pointerDown (si canThrow)
-    held --> rolling: pointerUp (vitesse calculée)
-    rolling --> resting: quilles/piste stabilisées (délai de grâce ~3s)
+    held --> resting: geste annulé (contact perdu / interrompu)
+    held --> replaying: pointerUp (lancer capturé)
+    replaying --> resting: rejeu terminé
 
     note right of held
         corps physique Rapier : kinematicPosition
     end note
-    note right of rolling
-        corps physique Rapier : kinematicVelocity
+    note right of replaying
+        corps de la scène : fixed et masqué,
+        le lancer se joue dans un monde Rapier privé
     end note
     note right of resting
         corps physique Rapier : fixed
     end note
 ```
 
-Le WebSocket STOMP **ne rejoue pas l'historique manqué** pendant une coupure réseau : à la reconnexion, les abonnés doivent resynchroniser leur état via un nouvel appel REST plutôt que de se fier uniquement aux prochains messages.
+Le projectile de la scène ne roule plus lui-même : au relâchement il est remis à sa position de repos et masqué, et c'est `ThrowReplayDirector` qui joue le lancer (voir ci-dessous).
+
+Le WebSocket STOMP **ne rejoue pas l'historique manqué** pendant une coupure réseau : à la reconnexion, les abonnés doivent resynchroniser leur état via un nouvel appel REST plutôt que de se fier uniquement aux prochains messages. Un `throwStarted` manqué pendant une coupure n'est donc pas rattrapé : ce joueur ne verra pas le replay de ce lancer.
+
+## Replay des lancers
+
+Un lancer n'est plus « roulé » en direct dans la scène : il est **décrit** au relâchement, puis **joué** de la même façon chez tous les clients, y compris chez celui qui l'a lancé.
+
+**Ce qui est envoyé** (`POST /games/{id}/throws`, schéma `ThrowLaunchPayload`) : le type de projectile, la taille de piste, l'origine, la vitesse, le `gripOffset` (bâton) et l'état du râtelier (pose et présence en jeu de chacune des 15 quilles). Le serveur relaie ce lancer aux autres joueurs par l'événement STOMP `throwStarted`.
+
+**Comment il est joué** (`src/features/game/replay/`) :
+
+- `replayWorld.ts` construit un **monde Rapier privé** à partir de zéro, avec les constantes du jeu, les variables du lancer et l'état du râtelier. Rien de la physique vivante de la scène n'intervient.
+- `throwReplay.ts` fait avancer ce monde **à pas fixes** (`PHYSICS_TIMESTEP` = 1/60 s) jusqu'à l'arrêt du projectile et des quilles. Le résultat dépend du nombre de pas, pas de l'horloge : deux clients obtiennent le même lancer.
+- `ThrowReplayDirector.tsx` affiche le résultat dans la scène (quilles et projectile) et rend la main une fois la pose finale maintenue ~0,7 s.
+- `replayOutcome.ts` compte les quilles tombées (quilles debout avant − après ; une quille dans la gouttière ou hors de la piste est comptée tombée) et calcule le râtelier de départ du lancer suivant (`settleRack`).
+
+**Qui décide du score** : le replay du lanceur. Son nombre de quilles tombées est ce qui part dans `POST /rolls`, avec le `throwId` renvoyé par `POST /throws` pour relier le lancer à son résultat. Le front attend ce `throwId` au plus 1,5 s (`awaitThrowId`) avant d'envoyer le lancer sans lui.
+
+**Score différé chez les autres** : `gameMessageRouter.ts` retient les `rollRegistered` tant qu'un replay distant est à l'écran (`shouldDeferRolls`), puis `flushDeferred()` les applique dans l'ordre d'arrivée. Le score ne « spoile » donc pas le lancer.
+
+**Garde-fous** :
+
+- un replay est borné (22 s de simulation) et un minuteur de sécurité de 40 s dans `GameScreen` rend le score même si le replay ne répond jamais ;
+- si `POST /throws` échoue, le lancer du joueur n'est pas bloqué : seuls les autres perdent le replay (avertissement en console) ;
+- sans râtelier disponible, le lancer est compté à 0 quille plutôt que de bloquer la partie ; un replay qui échoue est de même compté à 0 ;
+- un `throwStarted` sans râtelier n'est pas rejoué (`replayInputFromSnapshot` renvoie `null`) ;
+- `projectile` et `laneSize` ont des valeurs par défaut (`ball` / `medium`) dans le snapshot de partie, pour un backend plus ancien qui ne les enverrait pas.
 
 ## Scène 3D et assets
 
@@ -286,9 +337,15 @@ Les modèles 3D versionnés se trouvent dans `public/models/` (piste, quille, bo
 
 ```bash
 npm run test
+npm run test:coverage   # couverture v8 sur src/features/game et src/lib/api
 ```
 
-Les tests (Vitest) couvrent la **logique pure** sous `tests/game/` : calcul des symboles de frame (X/spare), logique de roulement de la boule, stabilisation des quilles, physique du lancer de bâton, tailles de piste, choix du projectile. Il n'y a pas aujourd'hui de tests de composants React ni de suite end-to-end automatisée.
+Les tests (Vitest) sont sous `tests/game/` et se répartissent en deux familles :
+
+- **Logique pure** : symboles de frame (X/spare), roulement de la boule, stabilisation des quilles, physique du lancer de bâton (aérodynamique, masse, impact dans le sable, résistance au roulement), tailles de piste, choix du projectile, râtelier, routeur de messages STOMP, cache de partie, charge utile et issue d'un replay.
+- **Simulations Rapier** (`*.rapier.test.ts`) : elles font tourner un vrai monde physique pour vérifier les replays de la boule et du bâton, le roulement sur la piste, un lancer raté, la durée et le rythme d'un replay.
+
+Il n'y a pas aujourd'hui de tests de composants React ni de suite end-to-end automatisée.
 
 ```bash
 npm run lint
@@ -304,6 +361,7 @@ Les tokens visuels (`src/styles/tokens.css`) définissent une palette « relique
 
 - `npm run build` produit un build statique dans `dist/`.
 - En production, le front appelle toujours **son propre origin** pour `/api` et `/ws` (pas de variable d'environnement pour cibler un backend différent) : un reverse proxy doit exposer le frontend statique et le backend Spring Boot sous la **même origine**.
+- Le front s'attend à ce que le backend expose, en plus du lobby et des lancers : `POST /games/{id}/throws`, l'événement STOMP `throwStarted` sur `/topic/games/{id}`, `projectile` et `laneSize` dans le snapshot de partie, un `POST /lobbies/{id}/start` qui accepte `{projectile, laneSize}` et un `throwId` optionnel dans `POST /games/{id}/rolls`. Sans `/throws` ou `throwStarted`, la partie reste jouable mais les autres joueurs ne voient pas les lancers en replay.
 - `src/features/preview/` est un module explicitement marqué comme temporaire dans son propre code (généré pour produire des captures d'écran) et ne doit pas être considéré comme une fonctionnalité du produit.
 
 ## Licence

@@ -8,6 +8,10 @@ import {
   lobbySnapshotSchema,
   mePayloadSchema,
   rollUpdateEventSchema,
+  throwSnapshotSchema,
+  type LaneSizeSetting,
+  type ProjectileSetting,
+  type ThrowLaunchPayload,
 } from "./schemas";
 
 export function createLobby(displayName: string) {
@@ -47,9 +51,15 @@ export function leaveLobby(lobbyId: string, sessionToken: string) {
   });
 }
 
-export function startGame(lobbyId: string, sessionToken: string) {
+/** The host's settings (projectile, lane) apply to every player of the game. */
+export function startGame(
+  lobbyId: string,
+  sessionToken: string,
+  settings?: { projectile: ProjectileSetting; laneSize: LaneSizeSetting },
+) {
   return apiFetch(`/lobbies/${lobbyId}/start`, {
     method: "POST",
+    body: settings,
     sessionToken,
     dataSchema: gameStartedPayloadSchema,
   });
@@ -63,11 +73,22 @@ export function whoAmI(gameId: string, sessionToken: string) {
   return apiFetch(`/games/${gameId}/me`, { sessionToken, dataSchema: mePayloadSchema });
 }
 
-export function submitRoll(gameId: string, sessionToken: string, pins: number) {
+/** `throwId` ties the roll to the throw registered at the release (see `startThrow`); optional metadata. */
+export function submitRoll(gameId: string, sessionToken: string, pins: number, throwId?: string) {
   return apiFetch(`/games/${gameId}/rolls`, {
     method: "POST",
-    body: { pins },
+    body: throwId ? { pins, throwId } : { pins },
     sessionToken,
     dataSchema: rollUpdateEventSchema,
+  });
+}
+
+/** The projectile just left the hand: the server records the launch and tells the other players to replay it. */
+export function startThrow(gameId: string, sessionToken: string, launch: ThrowLaunchPayload) {
+  return apiFetch(`/games/${gameId}/throws`, {
+    method: "POST",
+    body: launch,
+    sessionToken,
+    dataSchema: throwSnapshotSchema,
   });
 }

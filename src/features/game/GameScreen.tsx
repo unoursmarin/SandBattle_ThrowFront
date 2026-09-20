@@ -1,9 +1,8 @@
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-
 import { Button } from "@/components/ui/button";
 import { loadGameSessionToken } from "@/lib/session/sessionStorage";
-import { loadLaneSize, loadProjectileChoice } from "@/lib/session/sessionStorage";
-
+import { startThrow } from "@/lib/api/endpoints";
 import { RollStatus } from "./RollStatus";
 import { Scoreboard } from "./Scoreboard";
 import { BowlingScene } from "./scene/BowlingScene";
@@ -12,6 +11,11 @@ import { useCelebrationEvents } from "./useCelebrationEvents";
 import { useGameQuery, useWhoAmIQuery } from "./useGameQuery";
 import { useGameStompEvents } from "./useGameStompEvents";
 import { useSubmitRoll } from "./useSubmitRoll";
+import { awaitThrowId } from "./replay/pendingThrow";
+import { buildThrowLaunchPayload, replayInputFromSnapshot, type CapturedThrow, type ReplayInput } from "./replay/throwPayload";
+
+// A replay always ends by itself; this only protects the score from a replay that never reports back.
+const REPLAY_SAFETY_TIMEOUT_MS = 40_000;
 
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -19,13 +23,52 @@ export function GameScreen() {
     throw new Error("gameId manquant dans l'URL");
   }
 
+  const currentGameId: string = gameId; // narrowed: usable inside the handlers below
   const navigate = useNavigate();
   const sessionToken = loadGameSessionToken(gameId);
   const gameQuery = useGameQuery(gameId);
   const meQuery = useWhoAmIQuery(gameId, sessionToken);
   const submitRoll = useSubmitRoll(gameId);
-  useGameStompEvents(gameId);
   const myPlayerId = meQuery.data?.playerId;
+  const myPlayerIdRef = useRef(myPlayerId);
+  myPlayerIdRef.current = myPlayerId;
+
+  // Another player's throw to replay. While it plays, its score is held back: the throw is seen first.
+  const [remoteReplay, setRemoteReplay] = useState<ReplayInput | null>(null);
+  const remoteBusyRef = useRef(false);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The registration of the throw I released (resolves to its id, or null if it failed): the roll that follows is tied to it.
+  const pendingThrowRef = useRef<Promise<string | null> | null>(null);
+  // Between the end of my replay and the roll being sent (it may wait a moment for the throw's id): no second throw.
+  const [isSendingRoll, setIsSendingRoll] = useState(false);
+
+  const { flushDeferredRolls } = useGameStompEvents(gameId, {
+    onThrowStarted: (snapshot) => {
+      if (snapshot.playerId === myPlayerIdRef.current) return; // my own throw is played by my own scene
+      const input = replayInputFromSnapshot(snapshot);
+      if (!input) return;
+      remoteBusyRef.current = true;
+      setRemoteReplay(input);
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = setTimeout(finishRemoteReplay, REPLAY_SAFETY_TIMEOUT_MS);
+    },
+    shouldDeferRolls: () => remoteBusyRef.current,
+  });
+
+  function finishRemoteReplay() {
+    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+    safetyTimerRef.current = null;
+    remoteBusyRef.current = false;
+    setRemoteReplay(null);
+    flushDeferredRolls();
+  }
+  useEffect(
+    () => () => {
+      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+    },
+    [],
+  );
+
   const me = gameQuery.data?.players.find((p) => p.playerId === myPlayerId);
   const celebration = useCelebrationEvents(me);
 
@@ -46,13 +89,36 @@ export function GameScreen() {
   const currentFrame = me?.frames.find((f) => f.status === "IN_PROGRESS");
   const pinsStanding = currentFrame ? pinsRemainingForFrame(currentFrame.rolls) : 15;
   const totalRollsSoFar = me?.frames.reduce((sum, f) => sum + f.rolls.length, 0) ?? 0;
-  const canThrow = Boolean(sessionToken) && isMyTurn && !submitRoll.isPending;
+  const canThrow = Boolean(sessionToken) && isMyTurn && !submitRoll.isPending && !isSendingRoll;
   const lastRollPinsFelled = me ? lastConfirmedRollPinsFelled(me.frames) : null;
-  const projectileType = loadProjectileChoice();
+  // The host chose them for the whole game: a replay only makes sense on the lane it was thrown on.
+  const projectileType = game.projectile;
+  const laneSize = game.laneSize;
 
-  function handleRollComplete(pinsFelled: number) {
+  async function handleRollComplete(pinsFelled: number) {
     if (!sessionToken) return;
-    submitRoll.mutate({ sessionToken, pins: pinsFelled });
+    const pending = pendingThrowRef.current;
+    pendingThrowRef.current = null;
+    setIsSendingRoll(true);
+    try {
+      const throwId = await awaitThrowId(pending);
+      submitRoll.mutate({ sessionToken, pins: pinsFelled, throwId });
+    } finally {
+      setIsSendingRoll(false);
+    }
+  }
+
+  // The projectile just left my hand: tell the server, which tells the others so they can replay it.
+  // Never blocks my own throw: a failure only costs the others the replay.
+  function handleThrowLaunched(thrown: CapturedThrow) {
+    if (!sessionToken) return;
+    pendingThrowRef.current = startThrow(currentGameId, sessionToken, buildThrowLaunchPayload(thrown)).then(
+      (registered) => registered.throwId,
+      (error: unknown) => {
+        console.warn("Lancer non transmis aux autres joueurs :", error);
+        return null;
+      },
+    );
   }
 
   return (
@@ -64,7 +130,10 @@ export function GameScreen() {
         onRollComplete={handleRollComplete}
         celebration={celebration}
         projectileType={projectileType}
-        laneSize={projectileType === "stick" ? "small" : loadLaneSize()}
+        laneSize={laneSize}
+        onThrowLaunched={handleThrowLaunched}
+        remoteReplay={remoteReplay}
+        onRemoteReplayFinished={finishRemoteReplay}
       />
 
       <div className="pointer-events-none absolute inset-0 z-10">
