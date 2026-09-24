@@ -1,4 +1,4 @@
-# Telemis Bowl
+# Sandbatlle Online
 
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6?logo=typescript&logoColor=white)
@@ -10,9 +10,9 @@
 
 | Mode boule | Mode bâton (en vol) |
 |---|---|
-| ![Aperçu de Telemis Bowl en mode boule](screenshots/game-ball.png) | ![Aperçu de Telemis Bowl en mode bâton, projectile en l'air](screenshots/game-stick.png) |
+| ![Aperçu de Sandbatlle Online en mode boule](screenshots/game-ball.png) | ![Aperçu de Sandbatlle Online en mode bâton, projectile en l'air](screenshots/game-stick.png) |
 
-Front-end du jeu **Telemis Bowl** : un bowling 3D multijoueur en temps réel (thème « fouilles archéologiques / plage tropicale »), construit en React 19 + Vite + Three.js (via React Three Fiber) et Rapier pour la physique. Le front consomme un **backend Spring Boot séparé** (non inclus dans ce dépôt) via REST et WebSocket STOMP.
+Front-end du jeu **Sandbatlle Online** : un bowling 3D multijoueur en temps réel (thème « fouilles archéologiques / plage tropicale »), construit en React 19 + Vite + Three.js (via React Three Fiber) et Rapier pour la physique. Le front consomme un **backend Spring Boot séparé** (non inclus dans ce dépôt) via REST et WebSocket STOMP.
 
 ## Sommaire
 
@@ -163,7 +163,7 @@ Règle de découpage observée dans le code : la **logique pure** (calcul de sco
 ### Prérequis
 
 - Node.js récent (aucune version minimale n'est déclarée dans le projet — à valider selon votre environnement).
-- Un **backend Spring Boot** de Telemis Bowl lancé sur `http://localhost:8080` (dépôt séparé). Sans lui, toutes les requêtes échoueront (`SERVER_UNREACHABLE`).
+- Un **backend Spring Boot** de Sandbatlle Online lancé sur `http://localhost:8080` (dépôt séparé). Sans lui, toutes les requêtes échoueront (`SERVER_UNREACHABLE`).
 
 ### Installation et lancement
 
@@ -366,4 +366,4 @@ Les tokens visuels (`src/styles/tokens.css`) définissent une palette « relique
 
 ## Licence
 
-Propriété de télémis tout droit réservé
+Propriété de Sandbatlle tout droit réservé

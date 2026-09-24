@@ -118,7 +118,7 @@ describe("laneSize (sessionStorage)", () => {
   });
 
   it("retombe sur small face à une valeur corrompue", () => {
-    store.set("telemis.laneSize", JSON.stringify("huge"));
+    store.set("sandbatlle.laneSize", JSON.stringify("huge"));
     expect(loadLaneSize()).toBe("small");
   });
 });

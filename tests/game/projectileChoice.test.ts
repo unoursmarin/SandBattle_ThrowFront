@@ -36,7 +36,7 @@ describe("projectileChoice (sessionStorage)", () => {
   });
 
   it("retombe sur stick face à une valeur corrompue", () => {
-    store.set("telemis.projectileChoice", JSON.stringify("disc"));
+    store.set("sandbatlle.projectileChoice", JSON.stringify("disc"));
     expect(loadProjectileChoice()).toBe("stick");
   });
 });

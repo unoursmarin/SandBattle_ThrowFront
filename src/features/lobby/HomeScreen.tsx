@@ -9,12 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCreateLobbyMutation, useJoinLobbyMutation } from "./useLobbyMutations";
 import { saveMembership } from "@/lib/session/sessionStorage";
-import telemisLogoFlat from "@/assets/telemis_logo.jpg";
+import sandbatlleLogoFlat from "@/assets/sandbatlle_logo.jpg";
 import "./home-screen.css";
 
 // Canvas three.js/react-three-fiber isolated in its own chunk
-const TelemisLogoMedallion = lazy(() =>
-  import("./TelemisLogoMedallion").then((m) => ({ default: m.TelemisLogoMedallion })),
+const SandbatlleLogoMedallion = lazy(() =>
+  import("./SandbatlleLogoMedallion").then((m) => ({ default: m.SandbatlleLogoMedallion })),
 );
 
 export function HomeScreen() {
@@ -55,17 +55,17 @@ export function HomeScreen() {
             <Suspense
               fallback={
                 <img
-                  src={telemisLogoFlat}
+                  src={sandbatlleLogoFlat}
                   alt=""
                   aria-hidden="true"
                   className="h-full w-full rounded-full object-cover"
                 />
               }
             >
-              <TelemisLogoMedallion />
+              <SandbatlleLogoMedallion />
             </Suspense>
           </div>
-          <h1>Telemis Bowl</h1>
+          <h1>Sandbatlle Online</h1>
           <p className="mt-2 max-w-[46ch] text-lg text-sand-200">
             Des fouilles archéologiques récentes ont mis au jour les règles d'un
             jeu ancien, étrangement proche du bowling. Reconstituez-le en temps

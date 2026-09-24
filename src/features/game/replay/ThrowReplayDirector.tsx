@@ -6,7 +6,7 @@ import type { Group } from "three";
 import { BALL_MODEL_URL } from "../scene/Ball";
 import { PIN_MODEL_URL } from "../scene/Pin";
 import type { PinRackHandle } from "../scene/PinRack";
-const STICK_MODEL_URL = "/models/throwing_stick.glb";
+import { STICK_MODEL_URL } from "../scene/ThrowingStick";
 import type { LaneLayout, LaneSize } from "../scene/laneSizes";
 import type { ProjectileType } from "../scene/projectileTypes";
 import { BALL_RADIUS } from "../scene/sceneConstants";

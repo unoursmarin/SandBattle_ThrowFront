@@ -4,7 +4,7 @@ import { isProjectileType, type ProjectileType } from "@/features/game/scene/pro
 
 // Persists the session token per lobby in `sessionStorage`.
 function storageKey(lobbyId: string): string {
-  return `telemis.session.${lobbyId}`;
+  return `sandbatlle.session.${lobbyId}`;
 }
 
 export function saveMembership(lobbyId: string, membership: LobbyMembershipDto): void {
@@ -40,7 +40,7 @@ export function clearMembership(lobbyId: string): void {
 // lobby -> game transition, so that the game screen (route /game/:gameId, without
 // knowledge of the lobbyId) can find it after a reload.
 function gameStorageKey(gameId: string): string {
-  return `telemis.session.game.${gameId}`;
+  return `sandbatlle.session.game.${gameId}`;
 }
 
 export function saveGameSessionToken(gameId: string, sessionToken: string): void {
@@ -60,7 +60,7 @@ export function loadGameSessionToken(gameId: string): string | null {
 }
 
 // Key for storing the player's chosen projectile type in sessionStorage.
-const PROJECTILE_CHOICE_KEY = "telemis.projectileChoice";
+const PROJECTILE_CHOICE_KEY = "sandbatlle.projectileChoice";
 /** What the lobby preselects for the host (a UI preference, unrelated to the fallback for a game with no settings). */
 const DEFAULT_PROJECTILE: ProjectileType = "stick";
 
@@ -84,7 +84,7 @@ export function loadProjectileChoice(): ProjectileType {
 }
 
 // Length of the lane chosen in the lobby.
-const LANE_SIZE_KEY = "telemis.laneSize";
+const LANE_SIZE_KEY = "sandbatlle.laneSize";
 
 export function saveLaneSize(size: LaneSize): void {
   try {

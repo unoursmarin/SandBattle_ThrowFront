@@ -4,7 +4,7 @@ import { useGLTF } from "@react-three/drei";
 import { useReducedMotion } from "framer-motion";
 import type { Group } from "three";
 
-const LOGO_MODEL_URL = "/models/telemis_logo.glb";
+const LOGO_MODEL_URL = "/models/sandbatlle_logo.glb";
 useGLTF.preload(LOGO_MODEL_URL);
 
 const ROTATE_SPEED = 0.012;
@@ -19,7 +19,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-// bonus 3D model of telemis 
+// bonus 3D model of sandbatlle 
 function Medallion() {
   const { scene } = useGLTF(LOGO_MODEL_URL);
   const groupRef = useRef<Group>(null);
@@ -110,7 +110,7 @@ function Medallion() {
  * (three.js + react-three-fiber + drei), assumé pour cette fonctionnalité,
  * mais isolé dans son propre chunk plutôt que dans le bundle critique.
  */
-export function TelemisLogoMedallion() {
+export function SandbatlleLogoMedallion() {
   return (
     <Canvas
       // Distance calée pour que le dossier du médaillon (rayon ≈0,35 m,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Mirror of the backend DTOs (see telemis-bowling/docs/architecture/api-rest.md and websocket-stomp.md)
+// Mirror of the backend DTOs (see sandbatlle-bowling/docs/architecture/api-rest.md and websocket-stomp.md)
 export const frameStatusSchema = z.enum(["IN_PROGRESS", "OPEN", "SPARE", "STRIKE"]);
 export type FrameStatus = z.infer<typeof frameStatusSchema>;
 export const gameSessionStatusSchema = z.enum(["IN_PROGRESS", "COMPLETED", "ABANDONED"]);
