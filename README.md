@@ -1,4 +1,4 @@
-# Sandbatlle Online
+# Sandbattle Online
 
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6?logo=typescript&logoColor=white)
